@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ReactElement } from "react";
 
+import { HoldSecs } from "../HoldSecs";
 import { Avatar, tone } from "../components";
 import { formatClock, formatSet, formatTime, plural } from "../format";
 import type { Logging } from "../log/context";
@@ -25,6 +26,8 @@ import { markFinished } from "../log/finished";
 import { useNow } from "../log/useNow";
 import { MAX_REST_MS, shiftRestAudio, startRestAudio, stopRestAudio } from "../restAudio";
 import { href, navigate } from "../router";
+import type { HoldTimer } from "../useHoldTimer";
+import { useHoldTimer } from "../useHoldTimer";
 
 /** Rest started when a set is ticked off. */
 const REST_MS = 90_000;
@@ -126,17 +129,20 @@ function SetRow({
   set,
   number,
   actions,
+  hold,
 }: {
   block: DraftBlock;
   set: DraftSet;
   number: number;
   actions: Actions;
+  hold: HoldTimer;
 }): ReactElement {
   const { measure } = block.exercise;
   const timed = measure === "seconds";
   const previous = block.previous[number - 1];
   const ready = valuesOf(set, measure) !== null;
   const amount = timed ? "seconds" : "reps";
+  const amountLabel = `Set ${String(number)} ${amount}`;
   return (
     <tr className={set.logged === null ? undefined : "done"}>
       <td>
@@ -157,18 +163,33 @@ function SetRow({
         />
       </td>
       <td>
-        <input
-          aria-label={`Set ${String(number)} ${amount}`}
-          inputMode={timed ? "decimal" : "numeric"}
-          value={timed ? set.seconds : set.reps}
-          onChange={(event) => {
-            const typed = event.target.value;
-            actions.edit(block, set, timed ? { seconds: typed } : { reps: typed });
-          }}
-          onBlur={() => {
-            actions.settle(block, set);
-          }}
-        />
+        {timed ? (
+          <HoldSecs
+            setId={set.id}
+            seconds={set.seconds}
+            label={amountLabel}
+            logged={set.logged !== null}
+            hold={hold}
+            onSeconds={(value) => {
+              actions.edit(block, set, { seconds: value });
+            }}
+            onSettle={() => {
+              actions.settle(block, set);
+            }}
+          />
+        ) : (
+          <input
+            aria-label={amountLabel}
+            inputMode="numeric"
+            value={set.reps}
+            onChange={(event) => {
+              actions.edit(block, set, { reps: event.target.value });
+            }}
+            onBlur={() => {
+              actions.settle(block, set);
+            }}
+          />
+        )}
       </td>
       <td>
         <input
@@ -234,7 +255,15 @@ function Target({ plan, measure }: { plan: Plan; measure: string }): ReactElemen
   );
 }
 
-function BlockCard({ block, actions }: { block: DraftBlock; actions: Actions }): ReactElement {
+function BlockCard({
+  block,
+  actions,
+  hold,
+}: {
+  block: DraftBlock;
+  actions: Actions;
+  hold: HoldTimer;
+}): ReactElement {
   const { exercise, plan } = block;
   const anyDone = block.sets.some((set) => set.logged !== null);
   return (
@@ -264,7 +293,14 @@ function BlockCard({ block, actions }: { block: DraftBlock; actions: Actions }):
         </thead>
         <tbody>
           {block.sets.map((set, index) => (
-            <SetRow key={set.id} block={block} set={set} number={index + 1} actions={actions} />
+            <SetRow
+              key={set.id}
+              block={block}
+              set={set}
+              number={index + 1}
+              actions={actions}
+              hold={hold}
+            />
           ))}
         </tbody>
       </table>
@@ -306,8 +342,18 @@ function BlockCard({ block, actions }: { block: DraftBlock; actions: Actions }):
 }
 
 /** One exercise, or a superset's exercises together on one rail. */
-function Group({ group, actions }: { group: DraftBlock[]; actions: Actions }): ReactElement {
-  const cards = group.map((block) => <BlockCard key={block.key} block={block} actions={actions} />);
+function Group({
+  group,
+  actions,
+  hold,
+}: {
+  group: DraftBlock[];
+  actions: Actions;
+  hold: HoldTimer;
+}): ReactElement {
+  const cards = group.map((block) => (
+    <BlockCard key={block.key} block={block} actions={actions} hold={hold} />
+  ));
   const rest = group.at(-1)?.plan?.rest_s;
   if (group.length === 1 || rest === undefined) {
     return <>{cards}</>;
@@ -390,9 +436,11 @@ type Pending = "empty" | "discard" | null;
 function ActiveWorkout({ logging, draft }: { logging: Logging; draft: Draft }): ReactElement {
   const [pending, setPending] = useState<Pending>(null);
   const actions = actionsFor(logging, draft);
+  const hold = useHoldTimer();
   const logged = loggedSets(draft);
 
   const close = async (write: ReturnType<typeof finishWrite>): Promise<void> => {
+    hold.cancel();
     stopRestAudio();
     await logging.outbox.send(write);
     logging.drafts.set(null);
@@ -437,7 +485,7 @@ function ActiveWorkout({ logging, draft }: { logging: Logging; draft: Draft }): 
         </p>
       ) : null}
       {groupBlocks(draft.blocks).map((group) => (
-        <Group key={group[0]?.key} group={group} actions={actions} />
+        <Group key={group[0]?.key} group={group} actions={actions} hold={hold} />
       ))}
       <a className="button" href={href({ name: "pick" })}>
         + Add exercise
