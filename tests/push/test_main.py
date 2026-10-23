@@ -170,7 +170,14 @@ def test_serve_from_the_environment(data_dir: Path) -> None:
         conn.commit()
         fresh = post(conn, TEST_NOTICE, datetime.now(UTC) - timedelta(seconds=1))
 
-    assert main(["serve"], env=env, wait=lambda _seconds: False) == 0
+    # True then False: a constant False hangs the inverted stop-check mutant.
+    polls = {"n": 0}
+
+    def wait(_seconds: float) -> bool:
+        polls["n"] += 1
+        return polls["n"] < 2
+
+    assert main(["serve"], env=env, wait=wait) == 0
 
     with closing(sqlite3.connect(data_dir / "trainer.db")) as conn:
         sent = conn.execute("SELECT sent_at FROM inbox WHERE id = ?", (fresh,)).fetchone()[0]

@@ -84,18 +84,26 @@ and runtime package installs are off. To upgrade Hermes, change `hermes_tag`
 and `hermes_commit` in `build.sh` in a reviewed PR.
 
 **Model.** `TRAINER_MODEL_URL` (an OpenAI-compatible base URL, HTTPS) and
-`TRAINER_MODEL` (the model id) in `deploy/local.env`. Hermes also uses it to
+`TRAINER_MODEL` (the model id) in `deploy/local.env`. The worked example is
+[xAI](https://docs.x.ai/developers/models): `TRAINER_MODEL_URL=https://api.x.ai/v1`
+and `TRAINER_MODEL=grok-4.7` (or another chat model id from that catalogue).
+Hermes reaches it as a custom OpenAI-compatible provider; the Coach tab never
+calls the vendor directly. Sampling knobs such as temperature are not set here
+(Hermes and the provider defaults apply). Hermes also uses the same model to
 compact the conversation, which `hermes/config.yaml` does at 32K tokens: every
-message resends the whole conversation, so its length is what a message costs. The API key is stored
-by `sudo ./deploy/hermes-secrets.sh`, which reads it from the terminal (or
-stdin) and never takes it as an argument. It writes two root-only files that
-systemd hands to the gateway as environment variables:
-- `/etc/hermes-trainer/model.env`, the provider key;
+message resends the whole conversation, so its length is what a message costs.
+The API key is stored by `sudo ./deploy/hermes-secrets.sh`, which reads it from
+the terminal (or stdin) and never takes it as an argument. It writes two
+root-only files that systemd hands to the gateway as environment variables:
+- `/etc/hermes-trainer/model.env`, the provider key (an xAI key when using xAI);
 - `/etc/hermes-trainer/gateway.env`, the key the gateway's API checks. This one
   is generated once; `--rotate-gateway-key` replaces it.
 
-Run the script again to change the provider key. Until both files exist,
-`install.sh` leaves the gateway stopped.
+To switch provider or model after install: edit those two keys in
+`deploy/local.env`, re-run `./deploy/build.sh` and `sudo ./deploy/install.sh`
+(or restart `trainer-coach` after a render that refreshed the unit), then run
+`sudo ./deploy/hermes-secrets.sh` again if the API key changed. Until both
+secret files exist, `install.sh` leaves the gateway stopped.
 
 **What it can do.** Memory, skills, session search, a to-do list, clarifying
 questions, and the trainer's tools. That's all: no terminal, files, web,

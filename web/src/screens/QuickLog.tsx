@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { ReactElement } from "react";
 
+import { HoldSecs } from "../HoldSecs";
 import type { ExerciseSummary } from "../api";
 import { formatSet } from "../format";
 import type { Logging } from "../log/context";
@@ -8,8 +9,10 @@ import { useDraft, useLogging } from "../log/context";
 import { finishWrite, newDraft, setWrite, typedOf, valuesOf } from "../log/draft";
 import type { DraftBlock, DraftSet } from "../log/draft";
 import { href } from "../router";
+import { useHoldTimer } from "../useHoldTimer";
 
 const EMPTY: DraftSet = { id: "", kg: "", reps: "", seconds: "", rpe: "", logged: null };
+const QUICK_HOLD_ID = "quick";
 
 function QuickLogForm({
   exercise,
@@ -23,6 +26,7 @@ function QuickLogForm({
   // Set before the first await: a double tap must not log two one-off workouts.
   const saving = useRef(false);
   const [busy, setBusy] = useState(false);
+  const hold = useHoldTimer();
   const timed = exercise.measure === "seconds";
   const values = valuesOf(set, exercise.measure);
 
@@ -32,6 +36,7 @@ function QuickLogForm({
     }
     saving.current = true;
     setBusy(true);
+    hold.cancel();
     const now = new Date();
     const oneOff = newDraft(crypto.randomUUID(), now);
     const row = { ...set, id: crypto.randomUUID(), logged: typedOf(set) };
@@ -71,17 +76,31 @@ function QuickLogForm({
             setSet({ ...set, kg: event.target.value });
           }}
         />
-        <input
-          aria-label={timed ? "seconds" : "reps"}
-          placeholder={timed ? "secs" : "reps"}
-          inputMode={timed ? "decimal" : "numeric"}
-          value={timed ? set.seconds : set.reps}
-          onChange={(event) => {
-            const typed = event.target.value;
-            setSet(timed ? { ...set, seconds: typed } : { ...set, reps: typed });
-            setLogged(null);
-          }}
-        />
+        {timed ? (
+          <HoldSecs
+            setId={QUICK_HOLD_ID}
+            seconds={set.seconds}
+            label="seconds"
+            logged={false}
+            hold={hold}
+            onSeconds={(value) => {
+              setSet({ ...set, seconds: value });
+              setLogged(null);
+            }}
+            onSettle={() => undefined}
+          />
+        ) : (
+          <input
+            aria-label="reps"
+            placeholder="reps"
+            inputMode="numeric"
+            value={set.reps}
+            onChange={(event) => {
+              setSet({ ...set, reps: event.target.value });
+              setLogged(null);
+            }}
+          />
+        )}
         <button type="submit" className="primary" disabled={values === null || busy}>
           Log
         </button>

@@ -686,6 +686,39 @@ describe("Log", () => {
     ]);
   });
 
+  it("fills seconds from a hold timer and leaves them editable", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(NOW);
+    const hang: DraftExercise = { id: 23, name: "Dead Hang", measure: "seconds", equipment: null };
+    const draft = addBlock(newDraft("w1", STARTED), { block: "h", set: "h1" }, hang, []);
+    const { drafts } = renderLogging(draft);
+    const card = screen.getByRole("region", { name: "Dead Hang" });
+
+    fireEvent.click(within(card).getByRole("button", { name: "Set 1 seconds start timer" }));
+    expect(restAudio.start).toHaveBeenCalledWith(10_000);
+    expect(screen.getByRole("timer", { name: "Ready" })).toHaveTextContent("in 10");
+    fireEvent.click(within(card).getByRole("button", { name: "Set 1 seconds cancel timer" }));
+    expect(restAudio.stop).toHaveBeenCalled();
+    expect(within(card).getByLabelText("Set 1 seconds")).toHaveValue("");
+
+    fireEvent.click(within(card).getByRole("button", { name: "Set 1 seconds start timer" }));
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(screen.getByRole("timer", { name: "Hold" })).toHaveTextContent("0 s");
+
+    act(() => {
+      vi.advanceTimersByTime(45_000);
+    });
+    expect(screen.getByRole("timer", { name: "Hold" })).toHaveTextContent("45 s");
+    fireEvent.click(within(card).getByRole("button", { name: "Set 1 seconds end timer" }));
+
+    const seconds = within(card).getByLabelText("Set 1 seconds");
+    expect(seconds).toHaveValue("45");
+    fireEvent.change(seconds, { target: { value: "43" } });
+    expect(drafts.get()?.blocks[0]?.sets[0]?.seconds).toBe("43");
+  });
+
   it("will not finish an empty workout", () => {
     const { outbox } = renderLogging(benchDraft());
 
