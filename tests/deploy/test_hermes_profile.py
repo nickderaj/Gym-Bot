@@ -12,11 +12,19 @@ HERMES = Path(__file__).resolve().parents[2] / "hermes"
 EXAMPLE = Path(__file__).resolve().parents[2] / "deploy" / "local.env.example"
 EXAMPLE_TEXT = EXAMPLE.read_text(encoding="utf-8")
 CONFIG = (HERMES / "config.yaml").read_text(encoding="utf-8")
-ALLOWED = "[memory, session_search, skills, todo, clarify, mcp-trainer]"
+ALLOWED = "[memory, session_search, skills, clarify, mcp-trainer]"
 
 
 def test_the_profile_is_the_config_and_the_soul() -> None:
     assert sorted(path.name for path in HERMES.iterdir()) == ["SOUL.md", "config.yaml"]
+
+
+def test_the_soul_keeps_simple_questions_cheap() -> None:
+    soul = (HERMES / "SOUL.md").read_text(encoding="utf-8")
+
+    assert "## Spend" in soul
+    assert "answer in plain text with no tools" in soul
+    assert "Call every tool you need in one step" in soul
 
 
 def test_learning_is_on_and_nothing_else_is_allowed() -> None:
@@ -24,10 +32,25 @@ def test_learning_is_on_and_nothing_else_is_allowed() -> None:
 
     assert f"toolsets: {ALLOWED}" in lines
     assert f"  api_server: {ALLOWED}" in lines
-    for toolset in ("terminal", "file", "web", "browser", "code_execution", "delegation"):
+    for toolset in (
+        "terminal",
+        "file",
+        "web",
+        "browser",
+        "code_execution",
+        "delegation",
+        "todo",
+    ):
         assert f"    - {toolset}" in lines
     assert '    enabled: "off"' in lines  # no tool-search bridge
     assert "  allow_lazy_installs: false" in lines  # no pip installs at runtime
+
+
+def test_a_turn_cannot_spend_dozens_of_model_calls() -> None:
+    lines = CONFIG.splitlines()
+
+    # Hermes defaults to hundreds of iterations; the Coach tab waits on one turn.
+    assert "  max_turns: 12" in lines
 
 
 def test_the_conversation_is_compacted_early() -> None:

@@ -18,12 +18,18 @@ providers:
       - ${TRAINER_MODEL}
 
 # What the coach can do. Learning is on from day one (D11): memory, skills and
-# session search. It has no terminal, files, web, browser or code execution:
-# training facts reach it only through the trainer's MCP tools (D10).
-toolsets: [memory, session_search, skills, todo, clarify, mcp-trainer]
+# session search. It has no terminal, files, web, browser, code execution or
+# to-do list: training facts reach it only through the trainer's MCP tools
+# (D10). A to-do list burned model rounds on phone chats without helping
+# accuracy, so it stays off.
+toolsets: [memory, session_search, skills, clarify, mcp-trainer]
 platform_toolsets:
-  api_server: [memory, session_search, skills, todo, clarify, mcp-trainer]
+  api_server: [memory, session_search, skills, clarify, mcp-trainer]
 agent:
+  # One Coach message is one Hermes turn that may call the model many times.
+  # Cap the loop so a simple question cannot spend dozens of provider calls;
+  # a program proposal still fits when tools are batched (see SOUL.md).
+  max_turns: 12
   # Belt and braces: removed everywhere, whatever a platform lists.
   disabled_toolsets:
     - terminal
@@ -36,6 +42,7 @@ agent:
     - delegation
     - cronjob
     - connections
+    - todo
 # Every message resends the whole conversation, so its length is the cost of a
 # message. Compact at 32K tokens: the default compacts at the lower of half the
 # context window and 256K, which on a 1M-token model let one message carry 350K.
