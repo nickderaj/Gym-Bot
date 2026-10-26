@@ -105,10 +105,12 @@ To switch provider or model after install: edit those two keys in
 `sudo ./deploy/hermes-secrets.sh` again if the API key changed. Until both
 secret files exist, `install.sh` leaves the gateway stopped.
 
-**What it can do.** Memory, skills, session search, a to-do list, clarifying
-questions, and the trainer's tools. That's all: no terminal, files, web,
-browser or code execution (`hermes/config.yaml` allows these toolsets and
-removes the rest).
+**What it can do.** Memory, skills, session search, clarifying questions, and
+the trainer's tools. That's all: no terminal, files, web, browser, code
+execution or to-do list (`hermes/config.yaml` allows these toolsets and removes
+the rest). A Coach turn may call the model several times for tools; the profile
+caps that loop (`agent.max_turns`) so a short question cannot burn dozens of
+provider calls.
 
 **The trainer's tools.** The gateway starts `python -m trainer.mcp` from the
 trainer's virtualenv and talks MCP to it over stdin and stdout. It reads the

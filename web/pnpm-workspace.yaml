@@ -7,6 +7,8 @@ minimumReleaseAge: 1440
 overrides:
   # Transitive through Vite/PostCSS; 1.2.1 has GHSA-68fv-2mgg-jv7q.
   source-map-js: 1.2.2
+  # Transitive through jsdom (Vitest); <8.12.2 has GHSA-xjj6-f33q-929c and related.
+  undici: 8.12.3
 # Do not self-manage the pnpm version: that writes an extra "environment" document
 # at the top of pnpm-lock.yaml, which GitHub's dependency graph and Dependabot read as
 # an empty graph (dependabot/dependabot-core#15904). The version is pinned by
