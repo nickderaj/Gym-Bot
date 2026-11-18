@@ -19,6 +19,7 @@ def test_there_are_deploy_scripts() -> None:
         "hermes-secrets.sh",
         "import-v1.sh",
         "install.sh",
+        "mcp-secrets.sh",
         "push-secrets.sh",
         "tailscale-serve.sh",
     ]

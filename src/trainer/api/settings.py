@@ -35,6 +35,8 @@ class Settings:
     coach: CoachSettings | None = None
     # The VAPID public key browsers subscribe with; None until push is set up.
     push_key: str | None = None
+    # Separate bearer key for the Tailscale-only MCP endpoint.
+    mcp_key: str | None = field(default=None, repr=False)
 
 
 def settings_from_env(env: Mapping[str, str]) -> Settings:
@@ -43,6 +45,8 @@ def settings_from_env(env: Mapping[str, str]) -> Settings:
     The coach is configured when both ``TRAINER_HERMES_URL`` and the gateway's
     ``API_SERVER_KEY`` (from its root-only secrets file) are set. Push is
     configured when ``TRAINER_VAPID_PUBLIC_KEY`` is (``deploy/push-secrets.sh``).
+    ``/mcp`` is open only when ``TRAINER_MCP_KEY`` is non-empty
+    (``deploy/mcp-secrets.sh``); it is not read from ``deploy/local.env``.
 
     Raises:
         SettingsError: if the data directory or the owner's login is not set.
@@ -60,4 +64,5 @@ def settings_from_env(env: Mapping[str, str]) -> Settings:
         web_dir=Path(web_dir) if web_dir else None,
         coach=CoachSettings(hermes_url, hermes_key) if hermes_url and hermes_key else None,
         push_key=env.get("TRAINER_VAPID_PUBLIC_KEY") or None,
+        mcp_key=env.get("TRAINER_MCP_KEY") or None,
     )

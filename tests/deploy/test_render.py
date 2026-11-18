@@ -66,6 +66,7 @@ def test_api_unit_runs_the_app_as_the_service_user_on_loopback() -> None:
         "Environment=TRAINER_OWNER_LOGIN=owner@example.com",
         "Environment=TRAINER_HERMES_URL=http://127.0.0.1:8642",
         "EnvironmentFile=-/etc/hermes-trainer/gateway.env",
+        "EnvironmentFile=-/etc/hermes-trainer/mcp.env",
         "EnvironmentFile=-/etc/hermes-trainer/push-public.env",
         "ExecStart=/opt/trainer/venv/bin/python -m trainer.api --host 127.0.0.1 --port 8000",
         "ReadWritePaths=/srv/trainer",

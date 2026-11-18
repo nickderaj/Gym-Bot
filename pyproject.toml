@@ -33,7 +33,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling==1.32.4"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -158,11 +158,18 @@ include_external_packages = true
 name = "Layered architecture"
 type = "layers"
 layers = [
-    "(trainer.api) | (trainer.mcp) | (trainer.push)",
+    "(trainer.api)",
+    "(trainer.mcp) | (trainer.push)",
     "(trainer.services)",
     "(trainer.storage)",
     "(trainer.domain)",
 ]
+
+[[tool.importlinter.contracts]]
+name = "Push stays out of the API and MCP"
+type = "forbidden"
+source_modules = ["trainer.api", "trainer.mcp"]
+forbidden_modules = ["trainer.push"]
 
 [[tool.importlinter.contracts]]
 name = "Domain is pure"

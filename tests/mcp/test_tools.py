@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from trainer.mcp.protocol import Json, ToolError
-from trainer.mcp.tools import tools
+from trainer.mcp.tools import _proposer, tools
 from trainer.services.programs import ProgramIn, accept_proposal, propose_program
 from trainer.storage.profile import Profile, save_profile
 
@@ -248,6 +248,18 @@ def _programs(imported: sqlite3.Connection) -> int:
 
 def test_current_program_summary(imported: sqlite3.Connection, tmp_path: Path) -> None:
     bench = _programs(imported)
+    found = imported.execute(
+        """
+        SELECT d.id, x.id
+        FROM programs p
+        JOIN program_days d ON d.program_id = p.id
+        JOIN program_blocks b ON b.day_id = d.id
+        JOIN block_exercises x ON x.block_id = b.id
+        WHERE p.status = 'active'
+        """
+    ).fetchone()
+    assert found is not None
+    day_id, block_id = int(found[0]), int(found[1])
 
     answer = call(tmp_path / "trainer.db", "current_program")
 
@@ -258,12 +270,14 @@ def test_current_program_summary(imported: sqlite3.Connection, tmp_path: Path) -
             "started_at": "2026-10-01T00:00:00+00:00",
             "days": [
                 {
+                    "id": day_id,
                     "name": "Push",
                     "blocks": [
                         {
                             "rest_s": 120,
                             "exercises": [
                                 {
+                                    "id": block_id,
                                     "exercise_id": bench,
                                     "name": "Barbell Bench Press",
                                     "measure": "reps",
@@ -301,3 +315,26 @@ def test_current_program_full(imported: sqlite3.Connection, tmp_path: Path) -> N
 def test_current_program_rejects_an_unknown_detail(database: Path) -> None:
     with pytest.raises(ToolError, match="detail"):
         call(database, "current_program", {"detail": "everything"})
+
+
+def test_program_proposer_reports_missing_writer_and_writer_failure() -> None:
+    program = {
+        "name": "Proposal",
+        "days": [
+            {
+                "name": "A",
+                "blocks": [
+                    {"exercises": [{"exercise_id": 1, "sets": 1, "rep_min": 1, "rep_max": 1}]}
+                ],
+            }
+        ],
+    }
+    with pytest.raises(ToolError, match=r"^program proposals are not configured$"):
+        _proposer(None)(program)
+
+    def fail(_program: ProgramIn) -> object:
+        failure = RuntimeError("disk unavailable")
+        raise failure
+
+    with pytest.raises(ToolError, match=r"^the program was not saved: disk unavailable$"):
+        _proposer(fail)(program)

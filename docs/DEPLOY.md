@@ -63,9 +63,87 @@ Two layers, both failing closed:
 
 `tailscale serve` adds a `Tailscale-User-Login` header to every request from a
 user-owned device on the tailnet. The API answers only when that header equals
-`TRAINER_OWNER_LOGIN`; everything except `/healthz` returns 403 otherwise,
-including requests from tagged devices (they carry no identity). This sits on top
-of the tailnet ACL, which already limits who can reach the host at all.
+`TRAINER_OWNER_LOGIN`. `/healthz` is public. `/mcp` does not accept that header:
+it requires the MCP bearer key described below, and answers 401 without it.
+Every other path returns 403, including requests from tagged devices (they carry
+no identity). This sits on top of the tailnet ACL, which already limits who can
+reach the host at all.
+
+The process binds to the loopback address in `TRAINER_BIND_HOST`. `tailscale
+serve` is the only way in. Do not use Tailscale Funnel.
+
+## Connect bots over MCP
+
+The same API process serves a stateless Streamable HTTP MCP endpoint at `/mcp`
+(no trailing slash). It is not a second socket and it is not bound to a public
+address. It uses the trainer's existing tool definitions and adds
+`record_workout` and `record_set` for writing workout entries and correcting
+sets. `propose_program` creates a proposal for review in the app. Bots cannot
+activate a program, archive one, or delete a workout or a set. The web API and
+the phone stay owner-only; the MCP key does not authorize them, and the owner's
+Tailscale identity does not authorize `/mcp`.
+
+`current_program` (the default summary) includes each day's `id` and each
+exercise's `id`. `record_workout` takes that day id as `program_day_id`, with
+`program_week`. `record_set` takes the exercise's `id` as `block_exercise_id`
+(that is not the catalogue `exercise_id`).
+
+### Credential
+
+The key is `TRAINER_MCP_KEY`, loaded from a root-owned `mcp.env` next to the
+other secrets (`EnvironmentFile` on `trainer-api.service`). It is not a key in
+`deploy/local.env`. After installing or updating the trainer:
+
+```console
+sudo ./deploy/mcp-secrets.sh
+```
+
+The command writes `$TRAINER_SECRETS_DIR/mcp.env` as root, mode `0600`, prints
+the key once on standard output, then restarts the API if the unit is enabled.
+Status text goes to standard error, so a restart failure does not hide the key.
+Copy the key into the bot connector's secret field and do not append the
+command's output to a shared log. To replace it, run
+`sudo ./deploy/mcp-secrets.sh --rotate` and update every connector. The previous
+key stops working when the API restarts. Until the file exists, or the variable
+is empty, `/mcp` answers 401 to everyone.
+
+The endpoint URL is `https://<machine>.<tailnet>.ts.net/mcp`.
+
+### What the request must look like
+
+- Method `POST`, `Content-Type: application/json` (parameters such as
+  `charset` are ignored; the type comparison is case-insensitive).
+- `Authorization: Bearer <key>`. The scheme is case-insensitive. The token is
+  compared in constant time and is not written to the log or repeated in an
+  error. A query string is not a substitute for the header.
+- No `Origin` header. Browsers send one, including a page trying to rebind a
+  name onto the tailnet address; this endpoint is for a bot process, which does
+  not send `Origin`. A request that has one is refused with 403 and the token
+  is not checked.
+
+One key is shared by every connected bot, so every connected bot can read the
+training log and use the same write tools.
+
+### Tailnet
+
+Allow the bot's Tailscale device to reach this host on TCP 443. Keep the ACL
+narrow to this host and port. Do not use Tailscale Funnel. In the bot's custom
+MCP connector, choose Streamable HTTP, use the HTTPS endpoint above, and set
+the authentication scheme to Bearer with the key from the setup command.
+
+### Check from the host
+
+```console
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  http://127.0.0.1:<api port>/mcp \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <key>' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+```
+
+`200` means the key was accepted. The same call without the header is `401`.
+The same header on `/api/workouts` is `403`. From another tailnet device, use
+`https://<machine>.<tailnet>.ts.net/mcp` instead of the loopback URL.
 
 ## The coach (Hermes)
 
@@ -118,7 +196,8 @@ training log read-only, through six tools: `recent_workouts`, `get_workout`,
 `list_exercises`, `exercise_history`, `body_weight` and `current_program` (the
 program being trained, its next day, and any proposal; a summary by default,
 with every note and start load only on `detail=full`, since each tool result is
-resent with every later message). It runs in the coach's
+resent with every later message). The summary includes each day's id and each
+exercise's id. It runs in the coach's
 sandbox, where the data directory is read-only. SQLite can read a WAL database
 from there only while its `-wal` and `-shm` files exist, so the API holds one
 connection open for as long as it runs, and `trainer-coach` starts after it.
