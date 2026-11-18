@@ -45,6 +45,8 @@ def settings_from_env(env: Mapping[str, str]) -> Settings:
     The coach is configured when both ``TRAINER_HERMES_URL`` and the gateway's
     ``API_SERVER_KEY`` (from its root-only secrets file) are set. Push is
     configured when ``TRAINER_VAPID_PUBLIC_KEY`` is (``deploy/push-secrets.sh``).
+    ``/mcp`` is open only when ``TRAINER_MCP_KEY`` is non-empty
+    (``deploy/mcp-secrets.sh``); it is not read from ``deploy/local.env``.
 
     Raises:
         SettingsError: if the data directory or the owner's login is not set.

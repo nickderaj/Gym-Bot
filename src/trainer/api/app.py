@@ -63,8 +63,9 @@ def create_app(settings: Settings | None = None, coach_gateway: Gateway | None =
 
     Returns:
         The app: the database is migrated, every route except the liveness check
-        answers only the owner's Tailscale identity, and the built web app (if
-        configured) is served at ``/``.
+        and ``/mcp`` answers only the owner's Tailscale identity, and the built
+        web app (if configured) is served at ``/``. ``/mcp`` requires its own
+        bearer key and does not accept the owner's identity header.
     """
     settings = settings or settings_from_env(os.environ)
     with closing(connect(settings.database)) as conn:
@@ -113,19 +114,49 @@ def create_app(settings: Settings | None = None, coach_gateway: Gateway | None =
 
 
 def access_denial(request: Request, settings: Settings) -> JSONResponse | None:
-    """Return the denial response for an unauthorized request, or ``None``."""
-    is_mcp = request.url.path == MCP_PATH
-    is_owner = request.headers.get(IDENTITY_HEADER) == settings.owner_login
-    if request.url.path in PUBLIC_PATHS or is_coach(request, settings) or (is_owner and not is_mcp):
+    """Return the denial response for an unauthorized request, or ``None``.
+
+    ``/mcp`` is not owner-authenticated: the Tailscale identity header is how the
+    phone proves itself, and a bot on the tailnet must not be able to borrow it.
+    """
+    if request.url.path in PUBLIC_PATHS or is_coach(request, settings):
         return None
-    if is_mcp:
-        given = request.headers.get("Authorization", "")
-        expected = f"Bearer {settings.mcp_key}" if settings.mcp_key else ""
-        if settings.mcp_key and hmac.compare_digest(given.encode(), expected.encode()):
-            return None
-        return JSONResponse(
-            {"error": "unauthorized"},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    if request.url.path == MCP_PATH:
+        return _mcp_denial(request, settings)
+    if request.headers.get(IDENTITY_HEADER) == settings.owner_login:
+        return None
     return JSONResponse({"detail": "forbidden"}, status_code=403)
+
+
+def _mcp_denial(request: Request, settings: Settings) -> JSONResponse | None:
+    """Deny ``/mcp`` unless it presents the bearer key and no ``Origin``.
+
+    Browsers send ``Origin``; a DNS-rebinding page would too, and remote bots do
+    not. The key is compared in constant time and is never copied into the
+    response. With no key configured, or an empty one, every request is refused.
+    """
+    # why: header names are case-insensitive, so a mutant changing only the name's case is equal
+    origin = request.headers.get("origin")  # pragma: no mutate
+    if origin is not None:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    key = settings.mcp_key
+    # why: header names are case-insensitive, and a missing header is not a bearer token
+    header = request.headers.get("Authorization", "")  # pragma: no mutate
+    if not key or not _bearer_matches(header, key):
+        return _unauthorized()
+    return None
+
+
+def _bearer_matches(header: str, key: str) -> bool:
+    """Whether ``header`` is ``Bearer`` plus ``key``. The scheme is case-insensitive."""
+    scheme, separator, token = header.partition(" ")
+    if separator != " " or scheme.lower() != "bearer":
+        return False
+    return hmac.compare_digest(token.encode(), key.encode())
+
+
+def _unauthorized() -> JSONResponse:
+    """401 with a bearer challenge and a body that cannot echo a credential."""
+    # why: header names are case-insensitive, so a mutant changing only the name's case is equal
+    challenge = "WWW-Authenticate"  # pragma: no mutate
+    return JSONResponse({"error": "unauthorized"}, status_code=401, headers={challenge: "Bearer"})

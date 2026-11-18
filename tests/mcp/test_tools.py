@@ -248,6 +248,18 @@ def _programs(imported: sqlite3.Connection) -> int:
 
 def test_current_program_summary(imported: sqlite3.Connection, tmp_path: Path) -> None:
     bench = _programs(imported)
+    found = imported.execute(
+        """
+        SELECT d.id, x.id
+        FROM programs p
+        JOIN program_days d ON d.program_id = p.id
+        JOIN program_blocks b ON b.day_id = d.id
+        JOIN block_exercises x ON x.block_id = b.id
+        WHERE p.status = 'active'
+        """
+    ).fetchone()
+    assert found is not None
+    day_id, block_id = int(found[0]), int(found[1])
 
     answer = call(tmp_path / "trainer.db", "current_program")
 
@@ -258,12 +270,14 @@ def test_current_program_summary(imported: sqlite3.Connection, tmp_path: Path) -
             "started_at": "2026-10-01T00:00:00+00:00",
             "days": [
                 {
+                    "id": day_id,
                     "name": "Push",
                     "blocks": [
                         {
                             "rest_s": 120,
                             "exercises": [
                                 {
+                                    "id": block_id,
                                     "exercise_id": bench,
                                     "name": "Barbell Bench Press",
                                     "measure": "reps",
@@ -315,12 +329,12 @@ def test_program_proposer_reports_missing_writer_and_writer_failure() -> None:
             }
         ],
     }
-    with pytest.raises(ToolError, match="program proposals are not configured"):
+    with pytest.raises(ToolError, match=r"^program proposals are not configured$"):
         _proposer(None)(program)
 
     def fail(_program: ProgramIn) -> object:
         failure = RuntimeError("disk unavailable")
         raise failure
 
-    with pytest.raises(ToolError, match="the program was not saved: disk unavailable"):
+    with pytest.raises(ToolError, match=r"^the program was not saved: disk unavailable$"):
         _proposer(fail)(program)

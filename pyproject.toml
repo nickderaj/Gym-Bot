@@ -166,6 +166,12 @@ layers = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "Push stays out of the API and MCP"
+type = "forbidden"
+source_modules = ["trainer.api", "trainer.mcp"]
+forbidden_modules = ["trainer.push"]
+
+[[tool.importlinter.contracts]]
 name = "Domain is pure"
 type = "forbidden"
 source_modules = ["trainer.domain"]

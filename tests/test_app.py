@@ -73,6 +73,16 @@ class TestSettings:
         assert settings_from_env({**base, "TRAINER_VAPID_PUBLIC_KEY": ""}).push_key is None
         assert settings_from_env(base).push_key is None
 
+    def test_the_mcp_key_is_optional_and_stays_out_of_repr(self) -> None:
+        base = {"TRAINER_DATA_DIR": "/srv/t", "TRAINER_OWNER_LOGIN": OWNER}
+
+        settings = settings_from_env({**base, "TRAINER_MCP_KEY": "mcp-secret"})
+
+        assert settings.mcp_key == "mcp-secret"
+        assert "mcp-secret" not in repr(settings)
+        assert settings_from_env(base).mcp_key is None
+        assert settings_from_env({**base, "TRAINER_MCP_KEY": ""}).mcp_key is None
+
     def test_web_dir_is_optional(self) -> None:
         settings = settings_from_env({"TRAINER_DATA_DIR": "/srv/t", "TRAINER_OWNER_LOGIN": OWNER})
 

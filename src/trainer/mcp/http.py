@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import closing
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Self
+from typing import TYPE_CHECKING, Annotated, Self, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Request, Response
@@ -91,6 +92,10 @@ def _journal_tools(database: Path) -> dict[str, Tool]:
     def save_workout(arguments: Json) -> object:
         parsed = _arguments(_WorkoutInput, arguments)
         client_id = str(parsed.client_id or uuid4())
+        day_id = parsed.program_day_id
+        # why: cast is erased at runtime; mutating its type argument changes nothing
+        week = cast("int", parsed.program_week)  # pragma: no mutate
+        link = None if day_id is None else ProgramLink(day_id, week)
         try:
             with closing(connect(database)) as conn:
                 result = record_workout(
@@ -98,9 +103,7 @@ def _journal_tools(database: Path) -> dict[str, Tool]:
                     client_id,
                     (parsed.started_at, parsed.ended_at),
                     parsed.notes,
-                    None
-                    if parsed.program_day_id is None or parsed.program_week is None
-                    else ProgramLink(parsed.program_day_id, parsed.program_week),
+                    link,
                 )
         except (InvalidWorkoutError, StaleProgramDayError) as error:
             raise ToolError(str(error)) from error
@@ -134,7 +137,8 @@ def _journal_tools(database: Path) -> dict[str, Tool]:
             "Create or correct a workout entry. It returns client_id for logging sets; supply a "
             "previously returned client_id to correct an existing workout. "
             "started_at and ended_at must be timezone-aware ISO 8601 timestamps. For a "
-            "program workout, provide both program_day_id and program_week from current_program.",
+            "program workout, provide both program_day_id (the day's id) and program_week "
+            "from current_program.",
             _WorkoutInput.model_json_schema(),
             save_workout,
         ),
@@ -142,27 +146,31 @@ def _journal_tools(database: Path) -> dict[str, Tool]:
             "record_set",
             "Log a set to a workout in the app. Provide exercise_id from list_exercises and the "
             "workout client_id from record_workout. Omit client_id to create a set; provide an "
-            "existing set client_id to correct it. For a program workout, provide the matching "
-            "block_exercise_id from the program day.",
+            "existing set client_id to correct it. For a program workout, set block_exercise_id "
+            "to that exercise's id on the day from current_program.",
             _SetInput.model_json_schema(),
             save_set,
         ),
     }
 
 
-@router.post("/mcp")
-async def mcp(request: Request) -> Response:
-    """Handle a stateless MCP JSON-RPC request over Streamable HTTP."""
-    if request.headers.get("content-type", "").split(";", maxsplit=1)[0] != "application/json":
-        return Response(status_code=415)
-    try:
-        raw = (await request.body()).decode("utf-8")
-    except UnicodeDecodeError:
-        return Response(
-            content='{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"not JSON"}}',
-            media_type="application/json",
-        )
-    database = request.app.state.settings.database
+def _media_type(request: Request) -> str:
+    """The request's media type, without parameters, in lower case."""
+    # why: header names are case-insensitive, and a missing header is not JSON
+    header = request.headers.get("content-type", "")  # pragma: no mutate
+    return header.split(";")[0].strip().casefold()
+
+
+def _parse_error() -> Response:
+    """A JSON-RPC parse error that does not echo the body."""
+    return Response(
+        content='{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"not JSON"}}',
+        media_type="application/json",
+    )
+
+
+def _remote_tools(database: Path) -> dict[str, Tool]:
+    """Read tools, program proposals and workout writes for one database."""
 
     def write_program(program: ProgramIn) -> object:
         try:
@@ -170,10 +178,29 @@ async def mcp(request: Request) -> Response:
                 return asdict(propose_program(conn, program, datetime.now(UTC)))
         except ProgramError as error:
             raise ToolError(str(error)) from error
+        except sqlite3.Error as error:
+            # The driver message can name the database path. The bot does not need it.
+            message = "the program was not saved"
+            raise ToolError(message) from error
 
-    available = {**tools(database, program_writer=write_program), **_journal_tools(database)}
-    answer = handle_line(raw, available)
+    return {**tools(database, program_writer=write_program), **_journal_tools(database)}
+
+
+@router.post("/mcp")
+async def mcp(request: Request) -> Response:
+    """Handle one stateless MCP JSON-RPC request over Streamable HTTP.
+
+    The response is a single JSON document, not a stream. Nothing about the
+    call, including its arguments, is written to the log.
+    """
+    if _media_type(request) != "application/json":
+        return Response(status_code=415)
+    try:
+        raw = (await request.body()).decode("utf-8")
+    except UnicodeDecodeError:
+        return _parse_error()
+    answer = handle_line(raw, _remote_tools(request.app.state.settings.database))
     if answer is None:
         return Response(status_code=202)
-    logger.info("MCP tool request handled")
+    logger.info("MCP request handled")
     return Response(content=answer, media_type="application/json")

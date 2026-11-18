@@ -22,8 +22,9 @@ PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 SERVER_INFO = {"name": "trainer", "version": "1"}
 INSTRUCTIONS = (
     "Access to the owner's training log: workouts, sets, the exercise catalogue and body weight. "
-    "Loads are kilograms; dumbbell loads are per hand. A coach may propose a program for the "
-    "owner to accept in the app; it never changes the active program."
+    "Loads are kilograms; dumbbell loads are per hand. Listed tools may also record a workout or "
+    "a set, or propose a program for the owner to accept in the app. Recording and proposing "
+    "never activate a program and never delete a workout or a set."
 )
 
 # JSON-RPC error codes.

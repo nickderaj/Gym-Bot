@@ -112,13 +112,16 @@ def _body_weight(conn: sqlite3.Connection, _arguments: BodyWeight) -> object:
 
 
 def _day_summary(day: ProgramDay) -> dict[str, object]:
+    """One day, without notes or loads; ids stay so a set can be logged against it."""
     return {
+        "id": day.id,
         "name": day.name,
         "blocks": [
             {
                 "rest_s": block.rest_s,
                 "exercises": [
                     {
+                        "id": exercise.id,
                         "exercise_id": exercise.exercise_id,
                         "name": exercise.name,
                         "measure": exercise.measure,
@@ -140,6 +143,7 @@ def _current_program(conn: sqlite3.Connection, arguments: CurrentProgram) -> obj
         return asdict(found)
     # Every request carries the whole conversation, tool results included, so the
     # everyday answer leaves out the notes and loads only a new proposal needs.
+    # Day and exercise ids stay: recording a program workout needs them.
     active = found.active
     proposed = found.proposed
     return {
@@ -201,7 +205,8 @@ _TOOLS: dict[str, tuple[str, type[_Arguments], Callable[[sqlite3.Connection, Any
     "current_program": (
         (
             "The program being trained (active), with every day, block and exercise: "
-            "exercise_id, sets, rep_min-rep_max (seconds if timed), rest_s; a block of more "
+            "the day's id, each exercise's id (its block exercise) and exercise_id, sets, "
+            "rep_min-rep_max (seconds if timed), rest_s; a block of more "
             "than one exercise is a superset. Also the next week and day to train (next; "
             "week 7 is the deload week), and any proposal still waiting for the owner "
             "(proposed: its name and days). detail=full adds the program's and each "
@@ -231,9 +236,10 @@ def tools(
     programs_api: ProgramsApi | None = None,
     program_writer: Callable[[ProgramIn], object] | None = None,
 ) -> dict[str, Tool]:
-    """The tool set over the database at ``database``, opened read-only per call.
+    """The tool set over the database at ``database``.
 
-    ``propose_program`` is offered only with ``programs_api``, the way to save one.
+    Read tools open it read-only per call. ``propose_program`` is offered when
+    ``programs_api`` or ``program_writer`` is given; ``programs_api`` wins if both are.
     """
     found = {
         name: Tool(name, description, model.model_json_schema(), _caller(database, model, answer))
