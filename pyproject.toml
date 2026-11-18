@@ -158,7 +158,8 @@ include_external_packages = true
 name = "Layered architecture"
 type = "layers"
 layers = [
-    "(trainer.api) | (trainer.mcp) | (trainer.push)",
+    "(trainer.api)",
+    "(trainer.mcp) | (trainer.push)",
     "(trainer.services)",
     "(trainer.storage)",
     "(trainer.domain)",

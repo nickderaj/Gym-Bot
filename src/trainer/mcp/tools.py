@@ -226,7 +226,11 @@ PROPOSE_DESCRIPTION = (
 )
 
 
-def tools(database: Path, programs_api: ProgramsApi | None = None) -> dict[str, Tool]:
+def tools(
+    database: Path,
+    programs_api: ProgramsApi | None = None,
+    program_writer: Callable[[ProgramIn], object] | None = None,
+) -> dict[str, Tool]:
     """The tool set over the database at ``database``, opened read-only per call.
 
     ``propose_program`` is offered only with ``programs_api``, the way to save one.
@@ -235,10 +239,11 @@ def tools(database: Path, programs_api: ProgramsApi | None = None) -> dict[str, 
         name: Tool(name, description, model.model_json_schema(), _caller(database, model, answer))
         for name, (description, model, answer) in _TOOLS.items()
     }
-    if programs_api is not None:
+    if programs_api is not None or program_writer is not None:
         schema = inline_refs(ProgramIn.model_json_schema())
+        writer = programs_api.propose if programs_api is not None else program_writer
         found["propose_program"] = Tool(
-            "propose_program", PROPOSE_DESCRIPTION, schema, _proposer(programs_api)
+            "propose_program", PROPOSE_DESCRIPTION, schema, _proposer(writer)
         )
     return found
 
@@ -264,13 +269,22 @@ def _resolve(node: object, definitions: Json) -> object:
     return {key: _resolve(value, definitions) for key, value in node.items()}
 
 
-def _proposer(programs_api: ProgramsApi) -> Callable[[Json], object]:
+def _proposer(writer: Callable[[ProgramIn], object] | None) -> Callable[[Json], object]:
     def call(arguments: Json) -> object:
         try:
             program = ProgramIn.model_validate(arguments)
         except ValidationError as error:
             raise ToolError(_describe(error)) from error
-        saved = programs_api.propose(program)
+        if writer is None:
+            message = "program proposals are not configured"
+            raise ToolError(message)
+        try:
+            saved = writer(program)
+        except ToolError:
+            raise
+        except Exception as error:
+            message = f"the program was not saved: {error}"
+            raise ToolError(message) from error
         return {
             "proposed": saved,
             "next": "The owner reviews it in the app's Program screen and accepts it there.",

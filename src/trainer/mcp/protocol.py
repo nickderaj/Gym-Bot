@@ -21,8 +21,9 @@ if TYPE_CHECKING:
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 SERVER_INFO = {"name": "trainer", "version": "1"}
 INSTRUCTIONS = (
-    "Read-only access to the owner's training log: workouts, sets, the exercise "
-    "catalogue and body weight. Loads are kilograms; dumbbell loads are per hand."
+    "Access to the owner's training log: workouts, sets, the exercise catalogue and body weight. "
+    "Loads are kilograms; dumbbell loads are per hand. A coach may propose a program for the "
+    "owner to accept in the app; it never changes the active program."
 )
 
 # JSON-RPC error codes.

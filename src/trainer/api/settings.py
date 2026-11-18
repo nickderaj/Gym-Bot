@@ -35,6 +35,8 @@ class Settings:
     coach: CoachSettings | None = None
     # The VAPID public key browsers subscribe with; None until push is set up.
     push_key: str | None = None
+    # Separate bearer key for the Tailscale-only MCP endpoint.
+    mcp_key: str | None = field(default=None, repr=False)
 
 
 def settings_from_env(env: Mapping[str, str]) -> Settings:
@@ -60,4 +62,5 @@ def settings_from_env(env: Mapping[str, str]) -> Settings:
         web_dir=Path(web_dir) if web_dir else None,
         coach=CoachSettings(hermes_url, hermes_key) if hermes_url and hermes_key else None,
         push_key=env.get("TRAINER_VAPID_PUBLIC_KEY") or None,
+        mcp_key=env.get("TRAINER_MCP_KEY") or None,
     )

@@ -67,6 +67,39 @@ user-owned device on the tailnet. The API answers only when that header equals
 including requests from tagged devices (they carry no identity). This sits on top
 of the tailnet ACL, which already limits who can reach the host at all.
 
+## Connect bots over MCP
+
+The API also serves a stateless Streamable HTTP MCP endpoint at `/mcp`. It uses
+the trainer's existing tool definitions and adds `record_workout` and
+`record_set` for writing workout entries and correcting sets. `propose_program`
+creates a proposal for review in the app; bots cannot activate or replace the
+program being trained. The endpoint requires a separate bearer key, even for a
+device that can reach the host over Tailscale. The web API remains owner-only.
+
+After installing or updating the trainer, create the MCP key on the host:
+
+```console
+sudo ./deploy/mcp-secrets.sh
+```
+
+The command stores the key in a root-only file, restarts the API, and prints the
+key once. Save it in the bot connector's secret field. If you need to replace
+it, run `sudo ./deploy/mcp-secrets.sh --rotate` and update the connector with
+the newly printed key. The endpoint URL is
+`https://<machine>.<tailnet>.ts.net/mcp`.
+
+Allow the bot's Tailscale device to reach this host on TCP 443 in the tailnet
+policy. Keep the ACL narrow to this host and port; the MCP bearer key provides a
+second check at `/mcp`. The existing web and API paths still require the owner's
+Tailscale identity. Do not use Tailscale Funnel. In the bot's custom MCP
+connector, choose Streamable HTTP, use the HTTPS endpoint above, and set the
+authentication scheme to Bearer with the key from the setup command.
+
+The key is shared by connected bots, so every connected bot has the same MCP
+tools. Workout entries and sets can be created or corrected, and program
+proposals can be submitted; deletion and direct activation of a program are not
+available through MCP.
+
 ## The coach (Hermes)
 
 The coach is a [Hermes](https://github.com/NousResearch/hermes-agent) gateway,
