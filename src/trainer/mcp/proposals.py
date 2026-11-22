@@ -71,7 +71,9 @@ class ProgramsApi:
                 that does, with the API's reason if it refused it otherwise, or
                 if it could not be reached.
         """
+        # pragma: no mutate start  # why: urllib POSTs a request with a body, so method=None is POST
         return self._send(EXERCISES_PATH, exercise, method="POST", what="exercise")
+        # pragma: no mutate end  # why: closes the block above
 
     def _send(
         self, path: str, body: BaseModel, *, method: str = "PUT", what: str = "program"
