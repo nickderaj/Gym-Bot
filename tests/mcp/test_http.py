@@ -98,6 +98,7 @@ class TestTransport:
             "propose_program",
             "record_workout",
             "record_set",
+            "add_exercise",
         }
         by_name = {tool["name"]: tool for tool in listed}
         assert by_name["record_workout"]["inputSchema"] == _WorkoutInput.model_json_schema()
@@ -653,3 +654,94 @@ class TestProgramWrites:
         assert refused["value"] == "the program was not saved"
         assert str(database) not in refused["value"]
         assert KEY not in refused["value"]
+
+
+class TestAddingAnExercise:
+    def test_a_new_exercise_is_added_and_can_be_logged(self, client: TestClient) -> None:
+        added = tool_call(
+            client,
+            "add_exercise",
+            {
+                "name": "  Cossack   Squat ",
+                "equipment": "bodyweight",
+                "muscle_groups": "quads, adductors",
+                "measure": "seconds",
+            },
+        )
+
+        assert added["isError"] is False
+        exercise = added["value"]
+        assert exercise == {
+            "id": _exercise_id(client, "Cossack Squat"),
+            "name": "Cossack Squat",
+            "equipment": "bodyweight",
+            "muscle_groups": "quads, adductors",
+            "measure": "seconds",
+            "workouts": 0,
+            "last_done": None,
+            "best_load_kg": None,
+        }
+        listed = tool_call(client, "list_exercises", {})["value"]
+        assert exercise["id"] in {entry["id"] for entry in listed}
+
+    def test_a_taken_name_is_refused_with_its_id(self, client: TestClient) -> None:
+        bench = _exercise_id(client, "Barbell Bench Press")
+
+        answer = tool_call(client, "add_exercise", {"name": "Bench Press", "equipment": "barbell"})
+
+        assert answer == {
+            "isError": True,
+            "value": (
+                "the exercise was not added: the catalogue already has it as "
+                f"Barbell Bench Press (id {bench}, barbell)"
+            ),
+        }
+
+    def test_a_similar_name_needs_allow_similar(self, client: TestClient) -> None:
+        bench = _exercise_id(client, "Barbell Bench Press")
+        arguments = {"name": "Bench Presses", "equipment": "dumbbell"}
+
+        refused = tool_call(client, "add_exercise", arguments)
+        allowed = tool_call(client, "add_exercise", {**arguments, "allow_similar": True})
+
+        assert refused == {
+            "isError": True,
+            "value": (
+                f"the exercise was not added: it looks like Barbell Bench Press (id {bench}, "
+                "barbell). Use one of those ids, or call add_exercise again with "
+                "allow_similar true if it really is a different exercise"
+            ),
+        }
+        assert allowed["isError"] is False
+        assert allowed["value"]["name"] == "Bench Presses"
+        assert allowed["value"]["equipment"] == "dumbbell"
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            {"name": "X", "equipment": "barbell"},
+            {"name": "Sled Push", "equipment": "sled"},
+            {"name": "Rowing", "equipment": "machine", "measure": "distance"},
+            {"name": "Sled Push", "equipment": "other", "load": 50},
+        ],
+    )
+    def test_invalid_arguments_are_refused(
+        self, client: TestClient, arguments: dict[str, Any]
+    ) -> None:
+        answer = tool_call(client, "add_exercise", arguments)
+
+        assert answer["isError"] is True
+        assert answer["value"].startswith("invalid arguments: ")
+
+    def test_an_unwritable_catalogue_does_not_name_its_path(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*_arguments: object, **_options: object) -> object:
+            message = "unable to open database file /srv/secret/trainer.db"
+            raise sqlite3.OperationalError(message)
+
+        monkeypatch.setattr("trainer.mcp.http.add_exercise", broken)
+
+        answer = tool_call(client, "add_exercise", {"name": "Sled Push", "equipment": "other"})
+
+        assert answer == {"isError": True, "value": "the exercise was not saved"}

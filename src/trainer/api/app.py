@@ -35,9 +35,13 @@ IDENTITY_HEADER = "Tailscale-User-Login"
 PUBLIC_PATHS = frozenset({"/healthz"})
 # What the coach's tool server may do with the gateway's key instead of the
 # owner's login: propose a program or an edit of the active one (it never
-# touches the active program itself).
+# touches the active program itself), or add an exercise to the catalogue.
 COACH_ROUTES = frozenset(
-    {("PUT", "/api/programs/proposal"), ("PUT", "/api/programs/edit-proposal")}
+    {
+        ("PUT", "/api/programs/proposal"),
+        ("PUT", "/api/programs/edit-proposal"),
+        ("POST", "/api/exercises"),
+    }
 )
 MCP_PATH = "/mcp"
 

@@ -15,10 +15,20 @@ from fastapi.testclient import TestClient
 
 from trainer.api.app import create_app
 from trainer.api.settings import CoachSettings, Settings
+from trainer.domain.exercises import Equipment
 from trainer.mcp.__main__ import programs_api, serve
 from trainer.mcp.proposals import TIMEOUT_S, ProgramsApi
 from trainer.mcp.protocol import ToolError
-from trainer.mcp.tools import EDIT_DESCRIPTION, PROPOSE_DESCRIPTION, inline_refs, tools
+from trainer.mcp.tools import (
+    ADD_EXERCISE_DESCRIPTION,
+    EDIT_DESCRIPTION,
+    PROPOSE_DESCRIPTION,
+    _adder,
+    duplicate_refusal,
+    inline_refs,
+    tools,
+)
+from trainer.services.journal import ExerciseIn
 from trainer.services.programs import ProgramEdit, ProgramIn
 
 OWNER = {"Tailscale-User-Login": "owner@example.com"}
@@ -218,7 +228,7 @@ class TestTheTool:
         assert "propose_program" not in tools(Path())
         offered = tools(Path(), ProgramsApi(URL, KEY))
 
-        assert list(offered)[-2:] == ["propose_program", "propose_program_edit"]
+        assert list(offered)[-3:] == ["propose_program", "propose_program_edit", "add_exercise"]
         tool = offered["propose_program"]
         assert (tool.name, tool.description) == ("propose_program", PROPOSE_DESCRIPTION)
         assert tool.description.endswith(".")
@@ -303,7 +313,7 @@ def test_the_server_offers_proposing_when_set_up(app: TestClient) -> None:
 
     listed, called = (json.loads(line) for line in out.getvalue().splitlines())
     names = [tool["name"] for tool in listed["result"]["tools"]]
-    assert names[-2:] == ["propose_program", "propose_program_edit"]
+    assert names[-3:] == ["propose_program", "propose_program_edit", "add_exercise"]
     assert called["result"]["isError"] is False
     assert bridge.requests[0].get_header("Authorization") == f"Bearer {KEY}"
 
@@ -430,3 +440,142 @@ class TestProposingAnEdit:
         with pytest.raises(ToolError, match=r"^invalid arguments: days\.0\.id: "):
             call(body)
         assert bridge.requests == []
+
+
+class TestAddingAnExercise:
+    """``add_exercise``: the coach adds to the catalogue through the API."""
+
+    def add_tool(self, app: TestClient, key: str = KEY) -> tuple[Any, ApiBridge]:
+        bridge = ApiBridge(app)
+        api = ProgramsApi(URL, key, opener=urllib.request.build_opener(bridge))
+        return tools(Path(), api)["add_exercise"].call, bridge
+
+    def test_it_is_offered_with_a_plain_schema(self) -> None:
+        tool = tools(Path(), ProgramsApi(URL, KEY))["add_exercise"]
+        text = json.dumps(tool.input_schema)
+
+        assert (tool.name, tool.description) == ("add_exercise", ADD_EXERCISE_DESCRIPTION)
+        assert "$ref" not in text
+        assert "$defs" not in text
+        assert tool.input_schema["required"] == ["name", "equipment"]
+        assert tool.input_schema["additionalProperties"] is False
+        assert "barbell" in tool.input_schema["properties"]["equipment"]["enum"]
+        assert tool.input_schema["properties"]["measure"]["enum"] == ["reps", "seconds"]
+
+    def test_a_writer_alone_offers_it(self) -> None:
+        assert "add_exercise" not in tools(Path())
+        call = tools(Path(), exercise_writer=lambda exercise: exercise.name)["add_exercise"].call
+
+        assert call({"name": " Sled  Push ", "equipment": "other"}) == "Sled  Push"
+
+    def test_an_exercise_is_added_through_the_api(self, app: TestClient) -> None:
+        call, bridge = self.add_tool(app)
+
+        answer = call({"name": "Cossack Squat", "equipment": "bodyweight", "measure": "seconds"})
+
+        assert answer == {
+            "id": ids(app)["Cossack Squat"],
+            "name": "Cossack Squat",
+            "equipment": "bodyweight",
+            "muscle_groups": None,
+            "measure": "seconds",
+            "workouts": 0,
+            "last_done": None,
+            "best_load_kg": None,
+        }
+        (request,) = bridge.requests
+        assert (request.get_method(), request.full_url) == ("POST", f"{URL}/api/exercises")
+        assert request.get_header("Authorization") == f"Bearer {KEY}"
+        assert isinstance(request.data, bytes)
+        assert json.loads(request.data) == {
+            "name": "Cossack Squat",
+            "equipment": "bodyweight",
+            "muscle_groups": None,
+            "measure": "seconds",
+            "allow_similar": False,
+        }
+
+    def test_a_taken_name_is_refused_with_its_id(self, app: TestClient) -> None:
+        call, _ = self.add_tool(app)
+        bench = ids(app)["Barbell Bench Press"]
+
+        with pytest.raises(ToolError) as raised:
+            call({"name": "Bench Press", "equipment": "barbell"})
+
+        assert str(raised.value) == (
+            "the exercise was not added: the catalogue already has it as "
+            f"Barbell Bench Press (id {bench}, barbell)"
+        )
+
+    def test_a_similar_name_needs_allow_similar(self, app: TestClient) -> None:
+        call, _ = self.add_tool(app)
+        arguments = {"name": "Bench Presses", "equipment": "dumbbell"}
+
+        with pytest.raises(ToolError, match=r"^the exercise was not added: it looks like "):
+            call(arguments)
+        answer = call({**arguments, "allow_similar": True})
+
+        assert answer["name"] == "Bench Presses"
+
+    def test_a_wrong_key_is_refused(self, app: TestClient) -> None:
+        call, _ = self.add_tool(app, key="guess")
+
+        with pytest.raises(ToolError, match=r"^the exercise was not saved: forbidden$"):
+            call({"name": "Cossack Squat", "equipment": "bodyweight"})
+
+        assert "Cossack Squat" not in ids(app)
+
+    def test_bad_arguments_never_reach_the_api(self, app: TestClient) -> None:
+        call, bridge = self.add_tool(app)
+
+        with pytest.raises(ToolError) as raised:
+            call({"name": "Row", "equipment": "boat"})
+
+        assert str(raised.value).startswith("invalid arguments: equipment: ")
+        assert bridge.requests == []
+
+    def test_without_a_writer_it_says_so(self) -> None:
+        with pytest.raises(ToolError, match=r"^adding exercises is not configured$"):
+            _adder(None)({"name": "Sled Push", "equipment": "other"})
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b'{"detail": {"reason": "exists"}}',
+            b'{"detail": {"matches": []}}',
+            b'{"detail": {"reason": "exists", "matches": [{"id": 1}]}}',
+            b'{"detail": {"reason": "exists", "matches": 3}}',
+        ],
+    )
+    def test_a_conflict_without_matches(self, payload: bytes) -> None:
+        error = urllib.error.HTTPError(URL, 409, "no", Message(), io.BytesIO(payload))
+        api = ProgramsApi(URL, KEY, opener=urllib.request.build_opener(Raising(error)))
+
+        with pytest.raises(ToolError) as raised:
+            api.add_exercise(ExerciseIn(name="Sled Push", equipment=Equipment.OTHER))
+
+        assert str(raised.value) == "the exercise was not saved: the app answered 409"
+
+    def test_an_unreachable_app_is_told_to_the_coach(self) -> None:
+        refused = Raising(urllib.error.URLError("refused"))
+        api = ProgramsApi(URL, KEY, opener=urllib.request.build_opener(refused))
+
+        with pytest.raises(ToolError) as raised:
+            api.add_exercise(ExerciseIn(name="Sled Push", equipment=Equipment.OTHER))
+
+        assert str(raised.value) == (
+            "the app cannot be reached to save the exercise (<urlopen error refused>)"
+        )
+
+
+def test_duplicate_refusals_name_every_match() -> None:
+    matches = [(3, "Bench Press", "barbell"), (7, "Floor Press", None)]
+
+    assert duplicate_refusal(exact=True, matches=matches[:1]) == (
+        "the exercise was not added: the catalogue already has it as Bench Press (id 3, barbell)"
+    )
+    assert duplicate_refusal(exact=False, matches=matches) == (
+        "the exercise was not added: it looks like Bench Press (id 3, barbell); "
+        "Floor Press (id 7). Use one of those ids, or call add_exercise again with "
+        "allow_similar true if it really is a different exercise"
+    )

@@ -428,6 +428,14 @@ class TestTheCoachsKey:
         applied = coached.put("/api/programs/active", json=edit, headers=COACH)
         assert applied.status_code == 403
 
+    def test_it_may_add_an_exercise(self, coached: TestClient) -> None:
+        body = {"name": "Cossack Squat", "equipment": "bodyweight"}
+
+        response = coached.post("/api/exercises", json=body, headers=COACH)
+
+        assert response.status_code == 201
+        assert response.json()["name"] == "Cossack Squat"
+
     @pytest.mark.parametrize(
         ("method", "path"),
         [
@@ -439,6 +447,8 @@ class TestTheCoachsKey:
             ("POST", "/api/programs/1/accept"),
             ("GET", "/api/today"),
             ("GET", "/api/workouts"),
+            ("GET", "/api/exercises"),
+            ("PUT", "/api/exercises"),
             ("POST", "/api/coach/messages"),
         ],
     )

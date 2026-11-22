@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from trainer.domain.exercises import Equipment, Measure, near_duplicates, normalise_name
 from trainer.domain.times import utc_iso
@@ -76,6 +78,40 @@ class NewExercise:
     equipment: Equipment
     muscle_groups: str | None
     measure: Measure
+
+
+class ExerciseIn(BaseModel):
+    """A request to add an exercise, from the app or from a tool call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=2, max_length=60),
+        Field(description="Its name as the owner would say it, e.g. 'Bulgarian Split Squat'."),
+    ]
+    equipment: Equipment
+    muscle_groups: (
+        Annotated[
+            str,
+            StringConstraints(max_length=200),
+            Field(description="Comma-separated, e.g. 'quads, glutes'."),
+        ]
+        | None
+    ) = None
+    # Distance is not creatable until sets can record a distance (cardio, later).
+    measure: Annotated[
+        Literal[Measure.REPS, Measure.SECONDS],
+        Field(description="reps, or seconds for a timed hold such as a plank."),
+    ] = Measure.REPS
+    allow_similar: Annotated[
+        bool,
+        Field(description="Add it even though it looks like an existing exercise."),
+    ] = False
+
+    def new_exercise(self) -> NewExercise:
+        """The exercise to add, without the duplicate-check switch."""
+        return NewExercise(self.name, self.equipment, self.muscle_groups, self.measure)
 
 
 def record_workout(
