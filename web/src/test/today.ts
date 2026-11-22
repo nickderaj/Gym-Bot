@@ -17,6 +17,8 @@ function planned(
     rep_min: 8,
     rep_max: 12,
     notes: null,
+    progression: "load",
+    variations: null,
     target: { decision: "progress", load_kg: 62.5, reps: [8, 8, 8] },
     last: null,
     ...extra,
@@ -30,6 +32,8 @@ export const UPPER: PlannedDay = {
   name: "Upper A",
   week: 2,
   deload: false,
+  kind: "gym",
+  deload_rpe: null,
   blocks: [
     {
       rest_s: 120,
@@ -79,6 +83,60 @@ export const TODAY: TodayPlan = {
   training_weeks: 6,
   days: 4,
   day: UPPER,
+  travel_days: 0,
+  travel_day: null,
   workout_client_id: null,
+  training_kind: null,
   left_over: null,
+};
+
+/** Travel A: push-ups, which progress by reps and have harder variations. */
+export const TRAVEL: PlannedDay = {
+  id: 21,
+  position: 1,
+  name: "Travel A",
+  week: 2,
+  deload: false,
+  kind: "travel",
+  deload_rpe: null,
+  blocks: [
+    {
+      rest_s: 60,
+      exercises: [
+        planned(5, "Push-up", {
+          equipment: "bodyweight",
+          sets: 4,
+          rep_min: 10,
+          rep_max: 15,
+          progression: "reps",
+          variations: "push-up -> feet-elevated -> archer",
+          target: { decision: "repeat", load_kg: null, reps: [12, 11, 10, 10] },
+        }),
+      ],
+    },
+  ],
+};
+
+/** A program with three travel days alongside its gym days. */
+export const HYBRID: TodayPlan = { ...TODAY, travel_days: 3, travel_day: TRAVEL };
+
+/** Travel A at the top of its range: the next target is the next variation. */
+export const TRAVEL_ADVANCING: PlannedDay = {
+  ...TRAVEL,
+  blocks: [
+    {
+      rest_s: 60,
+      exercises: [
+        planned(5, "Push-up", {
+          equipment: "bodyweight",
+          sets: 4,
+          rep_min: 10,
+          rep_max: 15,
+          progression: "reps",
+          variations: "push-up -> feet-elevated -> archer",
+          target: { decision: "advance", load_kg: null, reps: [10, 10, 10, 10] },
+        }),
+      ],
+    },
+  ],
 };

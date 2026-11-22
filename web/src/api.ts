@@ -362,6 +362,18 @@ const programExerciseSchema = z.object({
   rep_max: z.number().int(),
   start_load_kg: z.number().nullable(),
   notes: z.string().nullable(),
+  /** "reps": bodyweight or a band; progresses by reps, then a harder variation, never by kg. */
+  progression: z.enum(["load", "reps"]).default("load"),
+  /** The harder variations to move through, as free text (reps slots). */
+  variations: z.string().nullable().default(null),
+});
+
+const programDaySchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  blocks: z.array(
+    z.object({ rest_s: z.number().int(), exercises: z.array(programExerciseSchema) }),
+  ),
 });
 
 const programSchema = z.object({
@@ -371,16 +383,15 @@ const programSchema = z.object({
   training_weeks: z.number().int(),
   status: z.enum(["proposed", "active", "archived"]),
   started_at: z.string().nullable(),
-  /** In order: day 1 first, and each day's blocks in order. */
-  days: z.array(
-    z.object({
-      id: z.number().int(),
-      name: z.string(),
-      blocks: z.array(
-        z.object({ rest_s: z.number().int(), exercises: z.array(programExerciseSchema) }),
-      ),
-    }),
-  ),
+  /** The gym days in order: day 1 first, and each day's blocks in order. */
+  days: z.array(programDaySchema),
+  /** The optional second set of days, for when there is no gym; they rotate on their own. */
+  travel_days: z.array(programDaySchema).default([]),
+  /** Which version of the program this is (an edit or a restart makes the next). */
+  version: z.number().int().default(1),
+  run: z.number().int().default(1),
+  /** How this version came about; a proposal that is an "edit" applies to the live program. */
+  change: z.enum(["new", "edit", "restart"]).default("new"),
 });
 
 /** A week (from 1; the one after the training weeks is the deload) and a day (from 1). */
@@ -389,31 +400,85 @@ const positionSchema = z.object({ week: z.number().int(), day: z.number().int() 
 export const programsSchema = z.object({
   active: programSchema.nullable(),
   proposed: programSchema.nullable(),
-  /** The active program's next day; null without one, or once its block is done. */
+  /** The active program's next gym day; null without one, or once its block is done. */
   next: positionSchema.nullable(),
+  /** Its next travel day; null without travel days, or once its block is done. */
+  next_travel: positionSchema.nullable().default(null),
 });
+
+const versionSchema = z.object({
+  id: z.number().int(),
+  version: z.number().int(),
+  run: z.number().int(),
+  change: z.enum(["new", "edit", "restart"]),
+  name: z.string(),
+  started_at: z.string(),
+  current: z.boolean(),
+  /** Finished workouts trained under this version. */
+  workouts: z.number().int(),
+});
+
+/** The versions of the active program, newest first. */
+export const versionsSchema = z.array(versionSchema);
 
 export type Program = z.infer<typeof programSchema>;
 export type ProgramDay = Program["days"][number];
+export type ProgramExercise = ProgramDay["blocks"][number]["exercises"][number];
 export type Position = z.infer<typeof positionSchema>;
 
 /** @internal Exported for tests. */
 export const OFFLINE_PROGRAM = "Changing your program needs a connection.";
 
+/** The program as an edit of the live one: what it should be after, ids keeping what they name. */
+export interface ProgramEditBody {
+  name: string;
+  notes: string | null;
+  days: DayEditBody[];
+  travel_days: DayEditBody[];
+}
+
+export interface DayEditBody {
+  /** The live day this is, to keep its place; absent for a new day. */
+  id?: number;
+  name: string;
+  blocks: {
+    rest_s: number;
+    exercises: {
+      /** The live program exercise this is, to keep its progression; absent for a new one. */
+      id?: number;
+      exercise_id: number;
+      sets: number;
+      rep_min: number;
+      rep_max: number;
+      start_load_kg: number | null;
+      notes: string | null;
+      progression: "load" | "reps";
+      variations: string | null;
+    }[];
+  }[];
+}
+
 /**
- * Accept or turn down the proposed program shown, by its id: the server refuses
- * (409) if another has replaced it since. Not queued offline: it changes what
- * every later screen shows, so it happens now or not at all.
+ * A change to the programs, never queued offline: it changes what every later
+ * screen shows, so it happens now or not at all.
  */
-export async function changeProgram(
-  change: { accept: number } | { decline: number },
+async function sendProgramChange(
+  path: string,
+  method: "POST" | "PUT",
+  body?: unknown,
 ): Promise<CoachResult<null>> {
-  const [id, verb] = "accept" in change ? [change.accept, "accept"] : [change.decline, "decline"];
-  const path = `/api/programs/${String(id)}/${verb}`;
-  const method = "POST";
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const init: RequestInit =
+    body === undefined
+      ? { method, headers }
+      : {
+          method,
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        };
   let response: Response;
   try {
-    response = await fetch(path, { method, headers: { Accept: "application/json" } });
+    response = await fetch(path, init);
   } catch {
     return { kind: "error", message: OFFLINE_PROGRAM };
   }
@@ -427,9 +492,31 @@ export async function changeProgram(
   };
 }
 
+/**
+ * Accept or turn down the proposed program shown, by its id: the server refuses
+ * (409) if another has replaced it since. Accepting a proposed edit applies it
+ * to the live program.
+ */
+export async function changeProgram(
+  change: { accept: number } | { decline: number },
+): Promise<CoachResult<null>> {
+  const [id, verb] = "accept" in change ? [change.accept, "accept"] : [change.decline, "decline"];
+  return sendProgramChange(`/api/programs/${String(id)}/${verb}`, "POST");
+}
+
+/** Edit the live program now, as a new version that keeps its week, next days and history. */
+export async function editProgram(edit: ProgramEditBody): Promise<CoachResult<null>> {
+  return sendProgramChange("/api/programs/active", "PUT", edit);
+}
+
+/** Restart the live program: week 1 day 1 of both sets, same days, history kept. */
+export async function restartProgram(): Promise<CoachResult<null>> {
+  return sendProgramChange("/api/programs/active/restart", "POST");
+}
+
 /** What the next session of an exercise aims for, and why (the app's rules, D5 and D6). */
 export const targetSchema = z.object({
-  decision: z.enum(["start", "progress", "repeat", "reduce", "deload"]),
+  decision: z.enum(["start", "progress", "repeat", "reduce", "deload", "advance"]),
   load_kg: z.number().nullable(),
   /** One prefilled amount per set: reps, or seconds for a timed exercise. */
   reps: z.array(z.number().int()),
@@ -446,6 +533,8 @@ const plannedExerciseSchema = z.object({
   rep_min: z.number().int(),
   rep_max: z.number().int(),
   notes: z.string().nullable(),
+  progression: z.enum(["load", "reps"]).default("load"),
+  variations: z.string().nullable().default(null),
   target: targetSchema,
   /** The exercise's last session outside today's workout. */
   last: z.object({ started_at: z.string(), sets: z.array(setSchema) }).nullable(),
@@ -457,6 +546,10 @@ const plannedDaySchema = z.object({
   name: z.string(),
   week: z.number().int(),
   deload: z.boolean(),
+  /** Which set of days this is. */
+  kind: z.enum(["gym", "travel"]).default("gym"),
+  /** In the deload week, the effort to hold (about RPE 6). */
+  deload_rpe: z.number().int().nullable().default(null),
   blocks: z.array(
     z.object({ rest_s: z.number().int(), exercises: z.array(plannedExerciseSchema) }),
   ),
@@ -469,10 +562,15 @@ export const todaySchema = z
     program_name: z.string(),
     training_weeks: z.number().int(),
     days: z.number().int(),
-    /** Null once the block is done. */
+    /** The next gym day. Null once the block is done. */
     day: plannedDaySchema.nullable(),
-    /** An unfinished workout already training that day. */
+    /** How many travel days the program has, and the next one (null if none, or done). */
+    travel_days: z.number().int().default(0),
+    travel_day: plannedDaySchema.nullable().default(null),
+    /** An unfinished workout already training a day. */
     workout_client_id: z.string().nullable(),
+    /** Which set of days that unfinished workout trains. */
+    training_kind: z.enum(["gym", "travel"]).nullable().default(null),
     /**
      * An unfinished workout of a replaced program, to finish first. Told in
      * the same answer, so the screen never pairs two separate reads.

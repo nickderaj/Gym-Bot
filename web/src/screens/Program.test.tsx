@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { OFFLINE_PROGRAM } from "../api";
 import { routeFetch } from "../test/logging";
-import { blockLetter, formatPrescription, programRequest } from "./Program";
+import { formatPrescription, programRequest } from "./Program";
+import { blockLetter } from "./programEdit";
 
 const PROGRAMS = "/api/programs";
 
@@ -182,7 +183,7 @@ describe("Program", () => {
     render(<App />);
 
     const line = await screen.findByText(
-      "Deload week: the same days, fewer sets and lighter. Next: Upper.",
+      "Deload week: the same days, about half the sets at RPE 6. Next: Upper.",
     );
     expect(line).toHaveClass("deload");
     const weeks = document.querySelectorAll(".weeks li");

@@ -23,7 +23,14 @@ from trainer.services.journal import (
     record_set,
     record_workout,
 )
-from trainer.services.programs import ProgramError, ProgramIn, propose_program
+from trainer.services.programs import (
+    NoActiveProgramError,
+    ProgramEdit,
+    ProgramError,
+    ProgramIn,
+    propose_edit,
+    propose_program,
+)
 from trainer.storage.database import connect
 from trainer.storage.journal import JournalConflictError, ProgramLink, SetValues
 
@@ -137,8 +144,9 @@ def _journal_tools(database: Path) -> dict[str, Tool]:
             "Create or correct a workout entry. It returns client_id for logging sets; supply a "
             "previously returned client_id to correct an existing workout. "
             "started_at and ended_at must be timezone-aware ISO 8601 timestamps. For a "
-            "program workout, provide both program_day_id (the day's id) and program_week "
-            "from current_program.",
+            "program workout, provide both program_day_id (the id of a gym or a travel day) and "
+            "program_week (the week of next or next_travel) from current_program. A travel "
+            "workout does not advance the gym days, and the reverse.",
             _WorkoutInput.model_json_schema(),
             save_workout,
         ),
@@ -183,7 +191,20 @@ def _remote_tools(database: Path) -> dict[str, Tool]:
             message = "the program was not saved"
             raise ToolError(message) from error
 
-    return {**tools(database, program_writer=write_program), **_journal_tools(database)}
+    def write_edit(edit: ProgramEdit) -> object:
+        try:
+            with closing(connect(database)) as conn:
+                return asdict(propose_edit(conn, edit, datetime.now(UTC)))
+        except (NoActiveProgramError, ProgramError) as error:
+            raise ToolError(str(error)) from error
+        except sqlite3.Error as error:
+            message = "the edit was not saved"
+            raise ToolError(message) from error
+
+    return {
+        **tools(database, program_writer=write_program, edit_writer=write_edit),
+        **_journal_tools(database),
+    }
 
 
 @router.post("/mcp")

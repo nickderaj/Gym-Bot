@@ -205,7 +205,7 @@ class TestProposals:
 
         second = propose_program(db, proposal(ids, "Second"), NOW)
 
-        assert programs(db).proposed == second
+        assert programs(db, NOW).proposed == second
         assert [tuple(row) for row in db.execute("SELECT name, status FROM programs")] == [
             ("First", "archived"),
             ("Second", "proposed"),
@@ -221,7 +221,7 @@ class TestProposals:
         with pytest.raises(ProgramError, match=r"^no exercise has id 97, 98$"):
             propose_program(db, ProgramIn.model_validate(data), NOW)
 
-        assert programs(db).proposed is None
+        assert programs(db, NOW).proposed is None
         assert not db.in_transaction
 
     def test_distance_exercises_are_refused(
@@ -244,7 +244,7 @@ class TestProposals:
         with pytest.raises(ProgramError):
             propose_program(db, ProgramIn.model_validate(data), NOW)
 
-        assert programs(db).proposed == kept
+        assert programs(db, NOW).proposed == kept
 
     def test_decline_only_the_proposal_shown(
         self, db: sqlite3.Connection, ids: dict[str, int]
@@ -255,7 +255,7 @@ class TestProposals:
         with pytest.raises(NoProposalError, match=rf"^program {shown.id} is not the proposal$"):
             decline_proposal(db, shown.id)
 
-        assert programs(db).proposed == newer
+        assert programs(db, NOW).proposed == newer
         assert not db.in_transaction
 
     def test_a_replaced_or_declined_proposal_never_lends_its_id(
@@ -277,7 +277,7 @@ class TestProposals:
 
         decline_proposal(db, shown.id)
 
-        assert programs(db).proposed is None
+        assert programs(db, NOW).proposed is None
         status = db.execute("SELECT status FROM programs WHERE id = ?", (shown.id,)).fetchone()
         assert status[0] == "archived"
         assert not db.in_transaction
@@ -294,8 +294,8 @@ class TestProposals:
             ProgramStatus.ACTIVE,
             "2026-10-01T09:00:00+00:00",
         )
-        assert programs(db).active == accepted
-        assert programs(db).proposed is None
+        assert programs(db, NOW).active == accepted
+        assert programs(db, NOW).proposed is None
         assert not db.in_transaction
 
     def test_accept_archives_the_active_program(
@@ -309,7 +309,7 @@ class TestProposals:
         assert db.execute("SELECT status FROM programs WHERE id = ?", (old.id,)).fetchone()[0] == (
             "archived"
         )
-        active = programs(db).active
+        active = programs(db, NOW).active
         assert active is not None
         assert active.name == "New"
 
@@ -327,7 +327,7 @@ class TestProposals:
             accept_proposal(db, new.id, NOW)
 
         assert not db.in_transaction
-        assert programs(db).proposed == new
+        assert programs(db, NOW).proposed == new
         record_workout(db, "w1", (NOW, NOW + timedelta(hours=1)), None, link)
         assert accept_proposal(db, new.id, NOW).status is ProgramStatus.ACTIVE
 
@@ -397,7 +397,7 @@ def gym(db: sqlite3.Connection, ids: dict[str, int]) -> Gym:
 
 
 def planned(db: sqlite3.Connection) -> dict[str, PlannedExercise]:
-    plan = today(db)
+    plan = today(db, NOW)
     assert plan is not None
     assert plan.day is not None
     return {
@@ -411,11 +411,11 @@ class TestToday:
     ) -> None:
         propose_program(db, proposal(ids), NOW)
 
-        assert today(db) is None
-        assert programs(db).next is None
+        assert today(db, NOW) is None
+        assert programs(db, NOW).next is None
 
     def test_a_new_program_starts_on_its_first_day(self, gym: Gym) -> None:
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert (plan.program_id, plan.program_name, plan.training_weeks, plan.days) == (
@@ -447,19 +447,19 @@ class TestToday:
                 None,
             )
         ]
-        assert programs(gym.db).next == Position(1, 1)
+        assert programs(gym.db, NOW).next == Position(1, 1)
 
     def test_the_days_follow_what_was_done(self, gym: Gym) -> None:
         gym.train(1, 1, {"bench": [(10, 60.0)] * 3})
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
         assert plan is not None
         assert plan.day is not None
         assert (plan.day.week, plan.day.name) == (1, "Lower")
-        assert programs(gym.db).next == Position(1, 2)
+        assert programs(gym.db, NOW).next == Position(1, 2)
 
         gym.train(1, 2, {})
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
         assert plan is not None
         assert plan.day is not None
         assert (plan.day.week, plan.day.name) == (2, "Upper")
@@ -490,7 +490,7 @@ class TestToday:
         gym.train(1, 2, {"pull-up": [(8, None)] * 3})
         going = gym.train(2, 1, {"bench": [(4, 62.5)]}, finish=False)
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert plan.workout_client_id == going
@@ -501,18 +501,18 @@ class TestToday:
         assert bench.target == Target(Decision.PROGRESS, 62.5, (8, 8, 8))
         assert bench.last is not None
         assert [logged.reps for logged in bench.last.sets] == [10, 10, 10]
-        assert programs(gym.db).next == Position(2, 1)
+        assert programs(gym.db, NOW).next == Position(2, 1)
 
     def test_a_workout_in_progress_on_another_day_is_today(self, gym: Gym) -> None:
         going = gym.train(1, 2, {}, finish=False)  # day 2 first, day 1 not done
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert plan.workout_client_id == going
         assert plan.day is not None
         assert (plan.day.week, plan.day.position, plan.day.name) == (1, 2, "Lower")
-        assert programs(gym.db).next == Position(1, 2)
+        assert programs(gym.db, NOW).next == Position(1, 2)
 
     def test_a_workout_of_a_replaced_program_changes_nothing(
         self, gym: Gym, ids: dict[str, int]
@@ -523,7 +523,7 @@ class TestToday:
         gym.db.commit()
         accept_proposal(gym.db, propose_program(gym.db, proposal(ids, "Next"), NOW).id, NOW)
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert (plan.program_name, plan.workout_client_id) == ("Next", None)
@@ -556,13 +556,13 @@ class TestToday:
         going = gym.train(1, 1, {"bench": [(4, 60.0)]}, finish=False)
         record_workout(gym.db, "ad-hoc", (NOW + timedelta(days=9), None), None)
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert (plan.workout_client_id, plan.left_over) == (going, None)
         assert plan.day is not None
         assert plan.day.name == "Upper"
-        assert programs(gym.db).next == Position(1, 1)
+        assert programs(gym.db, NOW).next == Position(1, 1)
         # Today's own sets are not "last time", whichever workout is the latest.
         assert planned(gym.db)["bench"].last is None
 
@@ -570,7 +570,7 @@ class TestToday:
         gym.train(1, 1, {})
         record_workout(gym.db, "ad-hoc", (NOW + timedelta(days=9), None), None)
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert (plan.workout_client_id, plan.left_over) == (None, None)
@@ -581,7 +581,7 @@ class TestToday:
         gym.train(6, 1, {"bench": [(9, 80.0)] * 3})
         gym.train(6, 2, {})
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert plan.day is not None
@@ -591,11 +591,11 @@ class TestToday:
     def test_after_the_deload_week_the_block_is_done(self, gym: Gym) -> None:
         gym.train(7, 2, {})
 
-        plan = today(gym.db)
+        plan = today(gym.db, NOW)
 
         assert plan is not None
         assert (plan.day, plan.workout_client_id, plan.days) == (None, None, 2)
-        assert programs(gym.db).next is None
+        assert programs(gym.db, NOW).next is None
 
     def test_timed_exercises_count_seconds(self, gym: Gym) -> None:
         gym.train(1, 2, {"hang": [(45.0, None), (50.0, None)]})

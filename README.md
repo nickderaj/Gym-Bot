@@ -28,3 +28,5 @@ program changes and long-term coaching context.
 The React PWA and FastAPI service run on a private host and are served to the
 owner over Tailscale. See [deployment](docs/DEPLOY.md) for installation and
 [development](docs/DEVELOPMENT.md) for the toolchain and quality checks.
+Programs, travel days, editing and restarting are described in
+[programs](docs/PROGRAMS.md).

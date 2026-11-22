@@ -21,12 +21,21 @@ import type { Draft } from "../log/draft";
 import { href, navigate } from "../router";
 import { targetLine } from "./Log";
 
-/** "Week 3 of 6 · Upper/Lower", or the deload week. */
+/** "Week 3 of 6 · Upper/Lower", or the deload week (about half the sets, easy effort). */
 function weekLine(today: TodayPlan, day: PlannedDay): string {
-  const week = day.deload
-    ? "Deload week: fewer sets, lighter"
-    : `Week ${String(day.week)} of ${String(today.training_weeks)}`;
+  const deload =
+    day.deload_rpe === null
+      ? "Deload week: fewer sets, lighter"
+      : `Deload week: about half the sets at RPE ${String(day.deload_rpe)}`;
+  const week = day.deload ? deload : `Week ${String(day.week)} of ${String(today.training_weeks)}`;
   return `${week} · ${today.program_name}`;
+}
+
+type DayKind = PlannedDay["kind"];
+
+/** Which set of days the unfinished workout on the server trains; gym for older answers. */
+function trainingKind(today: TodayPlan): DayKind {
+  return today.training_kind ?? "gym";
 }
 
 function Exercises({ day }: { day: PlannedDay }): ReactElement {
@@ -56,6 +65,12 @@ function Exercises({ day }: { day: PlannedDay }): ReactElement {
                       <span className="block-letter">{plan.label}</span> {exercise.name}
                     </span>
                     <span className="best">{targetLine(plan, exercise.measure)}</span>
+                    {exercise.variations === null ? null : (
+                      <span className="muted last">
+                        {exercise.target.decision === "advance" ? "Move up: " : "Variations: "}
+                        {exercise.variations}
+                      </span>
+                    )}
                     <span className="muted last">
                       {exercise.last === null
                         ? "Not done before"
@@ -120,9 +135,14 @@ async function start(logging: Logging, today: TodayPlan, day: PlannedDay): Promi
   return due === null ? "stale" : startDay(logging, today.program_name, due);
 }
 
+/** The next day of `kind` in a plan. */
+function nextOf(plan: TodayPlan | null, kind: DayKind): PlannedDay | null {
+  return (kind === "travel" ? plan?.travel_day : plan?.day) ?? null;
+}
+
 /** The day in a fresh plan, if it is still `day` and no program workout is unfinished. */
 function stillDue(fresh: TodayPlan | null, day: PlannedDay): PlannedDay | null {
-  const due = fresh?.day;
+  const due = nextOf(fresh, day.kind);
   const free = fresh?.workout_client_id === null && fresh.left_over === null;
   return due?.id === day.id && due.week === day.week && free ? due : null;
 }
@@ -161,35 +181,31 @@ async function resume(
   return "started";
 }
 
-/** Start the day, or carry on with the workout already training it. */
-function Begin({
+/** The workout this phone has is in progress: carry on with it. */
+function ResumeLink({ same }: { same: boolean }): ReactElement {
+  return (
+    <div className="row-actions">
+      {same ? null : <p className="muted">Another workout is in progress.</p>}
+      <a className="primary" href={href({ name: "log" })}>
+        Resume ›
+      </a>
+    </div>
+  );
+}
+
+function Starter({
   logging,
-  draft,
   today,
   day,
   onStale,
 }: {
   logging: Logging;
-  draft: Draft | null;
   today: TodayPlan;
   day: PlannedDay;
   onStale: () => void;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  if (draft !== null) {
-    const same = draft.program?.day_id === day.id;
-    return (
-      <div className="row-actions">
-        {same ? null : <p className="muted">Another workout is in progress.</p>}
-        <a className="primary" href={href({ name: "log" })}>
-          Resume ›
-        </a>
-      </div>
-    );
-  }
-
   const id = today.workout_client_id;
   const begin = async (): Promise<void> => {
     setBusy(true);
@@ -227,6 +243,41 @@ function Begin({
   );
 }
 
+/** Start the day, or carry on with the workout already training it. */
+function Begin({
+  logging,
+  draft,
+  today,
+  day,
+  onStale,
+}: {
+  logging: Logging;
+  draft: Draft | null;
+  today: TodayPlan;
+  day: PlannedDay;
+  onStale: () => void;
+}): ReactElement {
+  if (draft !== null) {
+    return <ResumeLink same={draft.program?.day_id === day.id} />;
+  }
+  // The server's unfinished workout trains one set of days: only that set resumes it.
+  if (today.workout_client_id !== null && trainingKind(today) !== day.kind) {
+    return (
+      <p className="muted">
+        A {trainingKind(today)} workout is in progress. Finish it before starting this one.
+      </p>
+    );
+  }
+  return <Starter logging={logging} today={today} day={day} onStale={onStale} />;
+}
+
+/** "Day 2 of 4", or "Travel day 1 of 3". */
+function dayCount(today: TodayPlan, day: PlannedDay): string {
+  return day.kind === "travel"
+    ? `Travel day ${String(day.position)} of ${String(today.travel_days)}`
+    : `Day ${String(day.position)} of ${String(today.days)}`;
+}
+
 function Planned({
   today,
   day,
@@ -244,9 +295,7 @@ function Planned({
   return (
     <>
       <header className="page-head today-head">
-        <p className="muted">
-          Day {day.position} of {today.days}
-        </p>
+        <p className="muted">{dayCount(today, day)}</p>
         <h1>{day.name}</h1>
         <p className={day.deload ? "deload" : "muted"}>{weekLine(today, day)}</p>
         {logging === null || (held && draft === null) ? null : (
@@ -355,6 +404,40 @@ function Plan({ onStale }: { onStale: () => void }): ReactElement {
   );
 }
 
+/** Gym or travel: which set of days to train. */
+function SetChoice({
+  kind,
+  onChange,
+}: {
+  kind: DayKind;
+  onChange: (kind: DayKind) => void;
+}): ReactElement {
+  return (
+    <div className="segmented" role="group" aria-label="Which days">
+      {(["gym", "travel"] as const).map((option) => (
+        <button
+          key={option}
+          type="button"
+          aria-pressed={kind === option}
+          onClick={() => {
+            onChange(option);
+          }}
+        >
+          {option === "gym" ? "Gym" : "Travel"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The set shown first: the one being trained, else gym (travel if only it has a day left). */
+function firstKind(today: TodayPlan): DayKind {
+  if (today.workout_client_id !== null) {
+    return trainingKind(today);
+  }
+  return today.day === null && today.travel_day !== null ? "travel" : "gym";
+}
+
 function Day({
   today,
   held,
@@ -364,13 +447,25 @@ function Day({
   held: boolean;
   onStale: () => void;
 }): ReactElement {
+  const [chosen, setChosen] = useState<DayKind | null>(null);
   if (today === null) {
     return <Nothing text="No program yet. Ask the coach for one." />;
   }
-  if (today.day === null) {
+  if (today.day === null && today.travel_day === null) {
     return <Nothing text="Block complete. Ask the coach for your next program." />;
   }
-  return <Planned today={today} day={today.day} onStale={onStale} held={held} />;
+  const kind = chosen ?? firstKind(today);
+  const day = kind === "travel" ? today.travel_day : today.day;
+  return (
+    <>
+      {today.travel_days === 0 ? null : <SetChoice kind={kind} onChange={setChosen} />}
+      {day === null ? (
+        <p className="muted">The {kind} days of this block are done.</p>
+      ) : (
+        <Planned today={today} day={day} onStale={onStale} held={held} />
+      )}
+    </>
+  );
 }
 
 /** Today: the active program's next day, with every set's target and last time. */
@@ -397,20 +492,26 @@ export function Today(): ReactElement {
   );
 }
 
-/** Home's pointer to the next program day, when there is one and nothing is in progress. */
-export function NextDayCard(): ReactElement | null {
-  const state = useApi("/api/today", todaySchema);
-  const day = state.status === "ready" ? state.data?.day : null;
-  if (day === null || day === undefined) {
-    return null;
-  }
+function NextCard({ day, travel }: { day: PlannedDay; travel: string | null }): ReactElement {
   return (
     <a className="card start tint" style={tone("green")} href={href({ name: "today" })}>
       <strong>Next in your program</strong>
       <span>
         {day.name} · {day.deload ? "Deload week" : `Week ${String(day.week)}`}
       </span>
+      {travel === null ? null : <span>Travel: {travel}</span>}
       <span className="go">Open ›</span>
     </a>
   );
+}
+
+/** Home's pointer to the next program day, when there is one and nothing is in progress. */
+export function NextDayCard(): ReactElement | null {
+  const state = useApi("/api/today", todaySchema);
+  const today = state.status === "ready" ? state.data : null;
+  const day = today?.day;
+  if (day === null || day === undefined) {
+    return null;
+  }
+  return <NextCard day={day} travel={today?.travel_day?.name ?? null} />;
 }

@@ -83,10 +83,23 @@ activate a program, archive one, or delete a workout or a set. The web API and
 the phone stay owner-only; the MCP key does not authorize them, and the owner's
 Tailscale identity does not authorize `/mcp`.
 
-`current_program` (the default summary) includes each day's `id` and each
-exercise's `id`. `record_workout` takes that day id as `program_day_id`, with
-`program_week`. `record_set` takes the exercise's `id` as `block_exercise_id`
-(that is not the catalogue `exercise_id`).
+`current_program` (the default summary) includes each gym day's `id` (`days`)
+and each travel day's `id` (`travel_days`, empty for a program without them),
+and each exercise's `id`. `record_workout` takes that day id as
+`program_day_id`, with `program_week`; a travel workout uses a travel day's id
+and does not advance the gym days (and the reverse). The two next positions are
+`next` (the next gym day) and `next_travel`, each `{week, day}` with `day`
+counted within its own set. `record_set` takes the exercise's `id` as
+`block_exercise_id` (that is not the catalogue `exercise_id`).
+
+`propose_program` accepts optional `travel_days`, and an exercise may set
+`progression: "reps"` (bodyweight or band: reps, then a harder variation named
+in `variations`, never a kg load). `propose_program_edit` proposes an edit of
+the program being trained: the whole program as it should be, with each kept
+day's and exercise's `id` (from `current_program`) so it keeps its progression.
+The owner approves it in the app, which applies it as a new version of the
+same program: the week, next days and logged history carry over. Neither tool
+changes the program being trained.
 
 ### Credential
 
@@ -203,11 +216,14 @@ from there only while its `-wal` and `-shm` files exist, so the API holds one
 connection open for as long as it runs, and `trainer-coach` starts after it.
 If the API is down, the tools answer that the log cannot be read.
 
-**Proposing a program.** The seventh tool, `propose_program`, is the coach's
-only write. It sends the program to the API at `TRAINER_API_URL` (the API's loopback
-address, set by `trainer-coach.service`) with the gateway's key, which the API
-accepts on `PUT /api/programs/proposal` and nowhere else. The API saves it as a
-proposal; the owner accepts it in the app. `hermes/config.yaml` passes the URL
+**Proposing a program.** The seventh and eighth tools, `propose_program` and
+`propose_program_edit`, are the coach's only writes. They send the program (or
+the edit of the program being trained) to the API at `TRAINER_API_URL` (the API's
+loopback address, set by `trainer-coach.service`) with the gateway's key, which
+the API accepts on `PUT /api/programs/proposal` and `PUT
+/api/programs/edit-proposal` and nowhere else. The API saves it as a proposal;
+the owner accepts it in the app (an edit is applied as an edit, keeping the
+program's place and history, not as a restart). `hermes/config.yaml` passes the URL
 and the key to the tool server as its only environment besides the data
 directory; Hermes keeps the `${API_SERVER_KEY}` name, not the key, in the
 config file it may rewrite.

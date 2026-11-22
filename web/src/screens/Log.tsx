@@ -229,6 +229,7 @@ const DECISIONS: Record<Plan["target"]["decision"], string> = {
   repeat: "Same load: beat last time",
   reduce: "Lighter: work back up",
   deload: "Deload: lighter, fewer sets",
+  advance: "Top of the range: take the next variation",
 };
 
 /** "Target 3 × 8–12 · 62.5 kg", or with seconds for a timed exercise. */
