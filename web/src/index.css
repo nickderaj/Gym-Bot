@@ -1329,6 +1329,132 @@ a.exercise-row strong {
   letter-spacing: 0;
 }
 
+/* Gym or travel on Today: one pressed at a time. */
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-deep);
+}
+
+.segmented button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 0.75rem;
+  background: transparent;
+  color: var(--subtext1);
+  font-weight: 700;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--glow);
+  color: var(--on-glow);
+}
+
+.subhead {
+  margin: 1.1rem 0 0.6rem;
+  font-size: 1.1rem;
+}
+
+.program-actions {
+  margin-top: 0.25rem;
+}
+
+.variations {
+  display: block;
+  font-size: 0.75rem;
+}
+
+.versions summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.versions .lines {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The program editor: the live program as a form. */
+.editor,
+.edit-set,
+.edit-blocks,
+.edit-slots {
+  display: grid;
+  gap: 0.85rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.edit-set > h2 {
+  margin: 0.4rem 0 0;
+}
+
+.edit-day,
+.edit-head-card {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.edit-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.edit-head h3 {
+  margin: 0;
+}
+
+.edit-arrows {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.edit-arrows .link:disabled {
+  color: var(--overlay0);
+}
+
+.edit-block {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--rule);
+}
+
+.edit-block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.edit-block.superset .edit-slots {
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--accent);
+}
+
+.edit-slot {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.edit-wide input {
+  width: 100%;
+}
+
 .blocks {
   list-style: none;
   margin: 0;

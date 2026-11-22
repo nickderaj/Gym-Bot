@@ -17,9 +17,13 @@ from trainer.domain.exercises import Equipment
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import date
 
 # D4: six training weeks, then the deload week.
 TRAINING_WEEKS = 6
+
+# The effort the deload week is done at, on the RPE scale: easy enough to recover.
+DELOAD_RPE = 6
 
 # Smallest load step for each kind of equipment, in kg: what the next plate,
 # dumbbell or pin adds. Bands and "other" have no kg to step, so their load
@@ -35,6 +39,13 @@ LOAD_INCREMENTS: dict[str, float] = {
 }
 
 
+class Progression(StrEnum):
+    """How an exercise slot progresses."""
+
+    LOAD = "load"  # double progression by kg
+    REPS = "reps"  # bodyweight or a band: reps, then a harder variation; no kg
+
+
 class Decision(StrEnum):
     """Why a target is what it is."""
 
@@ -43,6 +54,7 @@ class Decision(StrEnum):
     REPEAT = "repeat"  # somewhere in the range: same load, beat last time
     REDUCE = "reduce"  # every working set fell short of the range: load down
     DELOAD = "deload"  # the deload week (D6)
+    ADVANCE = "advance"  # a reps-only exercise reached the top: take its next variation
 
 
 @dataclass(frozen=True)
@@ -51,7 +63,8 @@ class Prescription:
 
     ``rep_min``-``rep_max`` is the range each set aims for: reps, or seconds
     for a timed exercise. ``start_load_kg`` is ``None`` when the program leaves
-    the first load to the owner.
+    the first load to the owner. A ``reps_only`` exercise (bodyweight or a band)
+    never suggests a load: it progresses by reps, then by a harder variation.
     """
 
     sets: int
@@ -59,6 +72,7 @@ class Prescription:
     rep_max: int
     start_load_kg: float | None
     increment_kg: float | None
+    reps_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,8 +125,19 @@ def progress(prescription: Prescription, last: Sequence[SetDone]) -> Target:
     the bottom. If every one fell short of the bottom, the load drops one
     increment (never below none) and is worked back up. Otherwise the load
     repeats, and each set is prefilled with last time's amount, within the range.
+    A reps-only exercise progresses by reps and variations instead, never by load.
     """
     bottom = (prescription.rep_min,) * prescription.sets
+    if prescription.reps_only:
+        return _progress_reps(prescription, last, bottom)
+    return _progress_load(prescription, last, bottom)
+
+
+# coverage-critical
+def _progress_load(
+    prescription: Prescription, last: Sequence[SetDone], bottom: tuple[int, ...]
+) -> Target:
+    """Double progression by load: the rules of :func:`progress`."""
     if not last:
         return Target(Decision.START, prescription.start_load_kg, bottom)
     load = working_load(last)
@@ -124,6 +149,25 @@ def progress(prescription: Prescription, last: Sequence[SetDone]) -> Target:
     if step is not None and load and max(working) < prescription.rep_min:
         return Target(Decision.REDUCE, max(load - step, 0.0), bottom)
     return Target(Decision.REPEAT, load, _repeat_reps(prescription, working))
+
+
+# coverage-critical
+def _progress_reps(
+    prescription: Prescription, last: Sequence[SetDone], bottom: tuple[int, ...]
+) -> Target:
+    """A reps-only exercise's next target: no load, and the next variation at the top.
+
+    If every prescribed set reached the top of the range, the target resets to
+    the bottom and the owner moves to the next variation or band level.
+    Otherwise each set aims to beat last time's reps. A load the owner typed
+    in is ignored.
+    """
+    if not last:
+        return Target(Decision.START, None, bottom)
+    amounts = [done.amount for done in last]
+    if len(amounts) >= prescription.sets and min(amounts) >= prescription.rep_max:
+        return Target(Decision.ADVANCE, None, bottom)
+    return Target(Decision.REPEAT, None, _repeat_reps(prescription, amounts))
 
 
 def _repeat_reps(prescription: Prescription, working: Sequence[float]) -> tuple[int, ...]:
@@ -150,6 +194,8 @@ def deload(prescription: Prescription, last: Sequence[SetDone]) -> Target:
     sets = (prescription.sets * 3 + 2) // 5
     reps = (prescription.rep_min,) * sets
     step = prescription.increment_kg
+    if prescription.reps_only:
+        return Target(Decision.DELOAD, None, reps)
     if load is None or step is None:
         return Target(Decision.DELOAD, load, reps)
     return Target(Decision.DELOAD, math.ceil(load * 9 / 10 / step - 0.5) * step, reps)
@@ -184,3 +230,57 @@ def next_position(last: Position | None, days: int, training_weeks: int) -> Posi
     if last.week <= training_weeks:
         return Position(last.week + 1, 1)
     return None
+
+
+@dataclass(frozen=True)
+class Session:
+    """A finished program workout: the program week it trained, and the day it started."""
+
+    week: int
+    day: date
+
+
+# coverage-critical
+def next_rotation_day(last: int | None, first: int, days: int) -> int:
+    """The day number to train next in one set of days, which repeat in order.
+
+    ``last`` is the day number of the set's last finished workout, if any:
+    the next is the one after it, and after the last day comes the first.
+    Without one the set starts at ``first``, where an edit left it.
+    """
+    if last is None:
+        return first
+    return last % days + 1
+
+
+# coverage-critical
+def calendar_week(last: Session | None, today: date) -> int:
+    """The program week ``today``'s training falls in, counting calendar weeks.
+
+    Used when a program has travel days: whichever set was trained, a week
+    counts once. Training in the same ISO calendar week as the last workout
+    stays in its program week; a later calendar week is the next program week
+    (a week with no training at all does not use one up). The first workout
+    of a program is in week 1.
+    """
+    if last is None:
+        return 1
+    if last.day.isocalendar()[:2] == today.isocalendar()[:2]:
+        return last.week
+    return last.week + 1
+
+
+# coverage-critical
+def travel_aware_position(
+    week: int, day: int, *, claimed: bool, training_weeks: int
+) -> Position | None:
+    """The position of a set's next day in calendar week ``week``; ``None`` past the deload.
+
+    ``claimed`` is whether that day is already trained in ``week``: its rotation
+    wrapped within one calendar week, so it moves to the next program week
+    instead of repeating this one.
+    """
+    due = week + 1 if claimed else week
+    if due > training_weeks + 1:
+        return None
+    return Position(due, day)

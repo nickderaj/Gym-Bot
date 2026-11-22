@@ -1,22 +1,29 @@
 """Program engine: double progression, deload and the next program day."""
 
+from datetime import date, timedelta
+
 import pytest
 
 from trainer.domain.exercises import Equipment
 from trainer.domain.programs import (
+    DELOAD_RPE,
     LOAD_INCREMENTS,
     TRAINING_WEEKS,
     Decision,
     Position,
     Prescription,
+    Session,
     SetDone,
     Target,
+    calendar_week,
     deload,
     is_deload_week,
     load_increment,
     next_position,
+    next_rotation_day,
     progress,
     target_for,
+    travel_aware_position,
     working_load,
 )
 
@@ -279,3 +286,119 @@ class TestNextPosition:
             position = next_position(position, 3, 6)
 
         assert seen == [Position(week, day) for week in range(1, 8) for day in range(1, 4)]
+
+
+# 4 sets of 10-15 push-ups: reps only, never a load.
+PUSH_UPS = Prescription(4, 10, 15, None, 2.5, reps_only=True)
+
+
+class TestRepsOnly:
+    def test_the_first_session_aims_for_the_bottom_with_no_load(self) -> None:
+        assert progress(PUSH_UPS, []) == Target(Decision.START, None, (10, 10, 10, 10))
+
+    def test_a_start_load_is_never_suggested(self) -> None:
+        with_load = Prescription(4, 10, 15, 20.0, 2.5, reps_only=True)
+
+        assert progress(with_load, []).load_kg is None
+
+    def test_the_top_of_the_range_on_every_set_advances_to_the_next_variation(self) -> None:
+        done = sets((15, None), (16, None), (15, None), (15, None))
+
+        assert progress(PUSH_UPS, done) == Target(Decision.ADVANCE, None, (10, 10, 10, 10))
+
+    def test_one_set_short_of_the_top_repeats_and_beats_last_time(self) -> None:
+        done = sets((15, None), (15, None), (15, None), (14, None))
+
+        assert progress(PUSH_UPS, done) == Target(Decision.REPEAT, None, (15, 15, 15, 14))
+
+    def test_fewer_sets_than_prescribed_cannot_advance(self) -> None:
+        done = sets((15, None), (15, None), (15, None))
+
+        assert progress(PUSH_UPS, done) == Target(Decision.REPEAT, None, (15, 15, 15, 10))
+
+    def test_reps_are_kept_within_the_range(self) -> None:
+        done = sets((4, None), (30, None), (12, None), (12, None))
+
+        assert progress(PUSH_UPS, done).reps == (10, 15, 12, 12)
+
+    def test_a_load_typed_in_does_not_matter(self) -> None:
+        done = sets((15, 10.0), (15, 20.0), (15, None), (15, 5.0))
+
+        assert progress(PUSH_UPS, done) == Target(Decision.ADVANCE, None, (10, 10, 10, 10))
+
+    def test_the_deload_week_keeps_no_load_and_halves_the_sets(self) -> None:
+        assert deload(PUSH_UPS, []) == Target(Decision.DELOAD, None, (10, 10))
+        loaded = sets((12, 20.0), (12, 20.0))
+        assert deload(PUSH_UPS, loaded) == Target(Decision.DELOAD, None, (10, 10))
+
+    def test_the_target_for_a_week(self) -> None:
+        done = sets((15, None))
+
+        assert target_for(PUSH_UPS, done, deload_week=True) == deload(PUSH_UPS, done)
+        assert target_for(PUSH_UPS, done, deload_week=False) == progress(PUSH_UPS, done)
+
+    def test_load_slots_are_unchanged_by_the_new_field(self) -> None:
+        assert BENCH.reps_only is False
+        assert progress(BENCH, []).load_kg == 10.0
+
+    def test_the_deload_effort(self) -> None:
+        assert DELOAD_RPE == 6
+
+
+class TestNextRotationDay:
+    @pytest.mark.parametrize(
+        ("last", "days", "expected"), [(1, 4, 2), (3, 4, 4), (4, 4, 1), (1, 1, 1)]
+    )
+    def test_the_day_after_the_last_and_round_again(
+        self, last: int, days: int, expected: int
+    ) -> None:
+        assert next_rotation_day(last, 1, days) == expected
+
+    @pytest.mark.parametrize("first", [1, 3])
+    def test_without_a_last_day_it_starts_where_the_version_began(self, first: int) -> None:
+        assert next_rotation_day(None, first, 4) == first
+
+
+MONDAY = date(2026, 10, 5)
+
+
+class TestCalendarWeek:
+    def test_the_first_workout_is_in_week_one(self) -> None:
+        assert calendar_week(None, MONDAY) == 1
+
+    @pytest.mark.parametrize("offset", [0, 3, 6])
+    def test_the_same_calendar_week_stays_in_the_program_week(self, offset: int) -> None:
+        last = Session(3, MONDAY)
+
+        assert calendar_week(last, MONDAY + timedelta(days=offset)) == 3
+
+    @pytest.mark.parametrize("offset", [7, 14, 70])
+    def test_a_later_week_is_the_next_one_however_long_the_gap(self, offset: int) -> None:
+        last = Session(3, MONDAY)
+
+        assert calendar_week(last, MONDAY + timedelta(days=offset)) == 4
+
+    def test_weeks_start_on_monday(self) -> None:
+        last = Session(2, date(2026, 10, 11))  # a Sunday
+
+        assert calendar_week(last, date(2026, 10, 12)) == 3  # the Monday after
+
+    def test_the_same_week_number_in_another_year_is_not_the_same_week(self) -> None:
+        last = Session(2, date(2026, 10, 5))
+
+        assert calendar_week(last, date(2027, 10, 4)) == 3
+
+
+class TestTravelAwarePosition:
+    def test_the_day_in_its_week(self) -> None:
+        assert travel_aware_position(2, 3, claimed=False, training_weeks=6) == Position(2, 3)
+
+    def test_a_day_already_trained_this_week_waits_for_the_next(self) -> None:
+        assert travel_aware_position(2, 1, claimed=True, training_weeks=6) == Position(3, 1)
+
+    def test_the_deload_week_is_the_last(self) -> None:
+        assert travel_aware_position(7, 2, claimed=False, training_weeks=6) == Position(7, 2)
+
+    def test_the_block_is_done_after_the_deload_week(self) -> None:
+        assert travel_aware_position(8, 1, claimed=False, training_weeks=6) is None
+        assert travel_aware_position(7, 1, claimed=True, training_weeks=6) is None

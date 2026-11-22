@@ -106,8 +106,9 @@ class TestTransport:
             "Create or correct a workout entry. It returns client_id for logging sets; supply a "
             "previously returned client_id to correct an existing workout. "
             "started_at and ended_at must be timezone-aware ISO 8601 timestamps. For a "
-            "program workout, provide both program_day_id (the day's id) and program_week "
-            "from current_program."
+            "program workout, provide both program_day_id (the id of a gym or a travel day) and "
+            "program_week (the week of next or next_travel) from current_program. A travel "
+            "workout does not advance the gym days, and the reverse."
         )
         assert by_name["record_set"]["description"] == (
             "Log a set to a workout in the app. Provide exercise_id from list_exercises and the "
@@ -498,6 +499,98 @@ class TestProgramWrites:
         assert "already has a workout" in again["value"]
         assert wrong_slot["isError"] is True
         assert "not on this workout" in wrong_slot["value"]
+
+    def test_a_travel_program_is_proposed_edited_and_trained_remotely(
+        self, client: TestClient
+    ) -> None:
+        bench = _exercise_id(client, "Barbell Bench Press")
+        body = _proposal(bench)
+        pushup = {
+            "exercise_id": bench,
+            "sets": 3,
+            "rep_min": 10,
+            "rep_max": 15,
+            "progression": "reps",
+            "variations": "push-up -> archer",
+        }
+        body["travel_days"] = [{"name": "Travel", "blocks": [{"exercises": [pushup]}]}]
+        proposed = tool_call(client, "propose_program", body)
+        client.post(f"/api/programs/{proposed['value']['proposed']['id']}/accept", headers=OWNER)
+
+        current = tool_call(client, "current_program", {})["value"]
+        travel = current["active"]["travel_days"][0]
+        assert (travel["name"], travel["blocks"][0]["exercises"][0]["progression"]) == (
+            "Travel",
+            "reps",
+        )
+        assert current["next"] == {"week": 1, "day": 1}
+        assert current["next_travel"]["day"] == 1
+        recorded = tool_call(
+            client,
+            "record_workout",
+            {
+                "started_at": "2026-11-18T09:00:00Z",
+                "program_day_id": travel["id"],
+                "program_week": current["next_travel"]["week"],
+            },
+        )
+        assert recorded["isError"] is False
+        assert recorded["value"]["program_day_id"] == travel["id"]
+
+        # An edit through the tool: a proposal the owner approves in the app.
+        gym = current["active"]["days"][0]
+        slot = gym["blocks"][0]["exercises"][0]
+        edit = {
+            "name": "Remote proposal",
+            "days": [
+                {
+                    "id": gym["id"],
+                    "name": "A",
+                    "blocks": [
+                        {
+                            "exercises": [
+                                {
+                                    "id": slot["id"],
+                                    "exercise_id": bench,
+                                    "sets": 5,
+                                    "rep_min": 3,
+                                    "rep_max": 5,
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+        edited = tool_call(client, "propose_program_edit", edit)
+        assert edited["isError"] is False
+        assert edited["value"]["proposed"]["change"] == "edit"
+        after = tool_call(client, "current_program", {})["value"]
+        assert after["proposed"]["edit"] is True
+        assert after["active"]["version"] == 1
+
+    def test_an_edit_without_a_program_is_an_error_not_a_crash(self, client: TestClient) -> None:
+        bench = _exercise_id(client, "Barbell Bench Press")
+        edit = _proposal(bench)
+
+        answer = tool_call(client, "propose_program_edit", edit)
+
+        assert answer["isError"] is True
+        assert answer["value"] == "there is no program being trained"
+
+    def test_an_unwritable_edit_does_not_name_its_path(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*_arguments: object) -> object:
+            message = "unable to open database file /srv/secret/trainer.db"
+            raise sqlite3.OperationalError(message)
+
+        monkeypatch.setattr("trainer.mcp.http.propose_edit", broken)
+        edit = _proposal(_exercise_id(client, "Barbell Bench Press"))
+
+        answer = tool_call(client, "propose_program_edit", edit)
+
+        assert answer == {"isError": True, "value": "the edit was not saved"}
 
     def test_a_set_client_id_cannot_move_to_another_exercise(self, client: TestClient) -> None:
         bench = _exercise_id(client, "Barbell Bench Press")

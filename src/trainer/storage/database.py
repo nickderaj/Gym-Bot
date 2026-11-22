@@ -197,6 +197,56 @@ MIGRATIONS: tuple[str, ...] = (
     -- forgotten once the key is replaced. Existing rows have none.
     ALTER TABLE push_subscriptions ADD COLUMN server_key TEXT;
     """,
+    """
+    -- Program versions, travel days and non-load progression.
+    --
+    -- A program is a lineage of versions: each row of programs is one version,
+    -- and editing a live program saves a new version (the old one is archived,
+    -- so a workout still points at the version it was done under). version
+    -- counts within the lineage (set when a version starts: a proposed edit has
+    -- none yet); run counts restarts: position (week and next
+    -- day) is worked out from the workouts of one run. start_week, start_day
+    -- and start_travel_day are the next position when the version began (1, 1,
+    -- 1 for a new program or a restart; the position it kept for an edit).
+    ALTER TABLE programs ADD COLUMN lineage_id INTEGER REFERENCES programs (id);
+    ALTER TABLE programs ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1);
+    ALTER TABLE programs ADD COLUMN run INTEGER NOT NULL DEFAULT 1 CHECK (run >= 1);
+    ALTER TABLE programs ADD COLUMN change TEXT NOT NULL DEFAULT 'new'
+        CHECK (change IN ('new', 'edit', 'restart'));
+    ALTER TABLE programs ADD COLUMN previous_id INTEGER REFERENCES programs (id);
+    ALTER TABLE programs ADD COLUMN start_week INTEGER NOT NULL DEFAULT 1
+        CHECK (start_week >= 1);
+    ALTER TABLE programs ADD COLUMN start_day INTEGER NOT NULL DEFAULT 1 CHECK (start_day >= 1);
+    ALTER TABLE programs ADD COLUMN start_travel_day INTEGER NOT NULL DEFAULT 1
+        CHECK (start_travel_day >= 1);
+    UPDATE programs SET lineage_id = id;
+    CREATE INDEX programs_lineage ON programs (lineage_id);
+
+    -- A day is a gym day or a travel day. position orders all of a program's
+    -- days (gym first, then travel); number is its place within its own set,
+    -- which rotates on its own. day_key names the day across versions.
+    ALTER TABLE program_days ADD COLUMN kind TEXT NOT NULL DEFAULT 'gym'
+        CHECK (kind IN ('gym', 'travel'));
+    ALTER TABLE program_days ADD COLUMN number INTEGER NOT NULL DEFAULT 1
+        CHECK (number >= 1);
+    UPDATE program_days SET number = position;
+    ALTER TABLE program_days ADD COLUMN day_key INTEGER;
+    UPDATE program_days SET day_key = id;
+
+    -- progression: 'load' is double progression by kg; 'reps' suggests no load
+    -- and moves to a harder variation (variations, free text) at the top of the
+    -- range. slot_key names the slot across versions, so an edit keeps its
+    -- progression; start_from_log makes a slot with no history of its own start
+    -- from the exercise's last logged load.
+    ALTER TABLE block_exercises ADD COLUMN progression TEXT NOT NULL DEFAULT 'load'
+        CHECK (progression IN ('load', 'reps'));
+    ALTER TABLE block_exercises ADD COLUMN variations TEXT;
+    ALTER TABLE block_exercises ADD COLUMN slot_key INTEGER;
+    UPDATE block_exercises SET slot_key = id;
+    ALTER TABLE block_exercises ADD COLUMN start_from_log INTEGER NOT NULL DEFAULT 0
+        CHECK (start_from_log IN (0, 1));
+    CREATE INDEX block_exercises_slot_key ON block_exercises (slot_key);
+    """,
 )
 
 

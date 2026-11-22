@@ -18,8 +18,8 @@ from trainer.api.settings import CoachSettings, Settings
 from trainer.mcp.__main__ import programs_api, serve
 from trainer.mcp.proposals import TIMEOUT_S, ProgramsApi
 from trainer.mcp.protocol import ToolError
-from trainer.mcp.tools import PROPOSE_DESCRIPTION, inline_refs, tools
-from trainer.services.programs import ProgramIn
+from trainer.mcp.tools import EDIT_DESCRIPTION, PROPOSE_DESCRIPTION, inline_refs, tools
+from trainer.services.programs import ProgramEdit, ProgramIn
 
 OWNER = {"Tailscale-User-Login": "owner@example.com"}
 KEY = "gateway-key"
@@ -218,7 +218,7 @@ class TestTheTool:
         assert "propose_program" not in tools(Path())
         offered = tools(Path(), ProgramsApi(URL, KEY))
 
-        assert list(offered)[-1] == "propose_program"
+        assert list(offered)[-2:] == ["propose_program", "propose_program_edit"]
         tool = offered["propose_program"]
         assert (tool.name, tool.description) == ("propose_program", PROPOSE_DESCRIPTION)
         assert tool.description.endswith(".")
@@ -302,6 +302,131 @@ def test_the_server_offers_proposing_when_set_up(app: TestClient) -> None:
     serve([listing, call], out, Path(), api)
 
     listed, called = (json.loads(line) for line in out.getvalue().splitlines())
-    assert [tool["name"] for tool in listed["result"]["tools"]][-1] == "propose_program"
+    names = [tool["name"] for tool in listed["result"]["tools"]]
+    assert names[-2:] == ["propose_program", "propose_program_edit"]
     assert called["result"]["isError"] is False
     assert bridge.requests[0].get_header("Authorization") == f"Bearer {KEY}"
+
+
+class TestProposingAnEdit:
+    """``propose_program_edit``: the same bridge, to the edit-proposal route."""
+
+    @pytest.fixture
+    def live(self, app: TestClient) -> dict[str, Any]:
+        """The active program: a one-day Push, with the owner having accepted it."""
+        bench = ids(app)["Barbell Bench Press"]
+        proposed = app.put(
+            "/api/programs/proposal", json=program(bench, start_load_kg=60), headers=OWNER
+        )
+        accepted = app.post(f"/api/programs/{proposed.json()['id']}/accept", headers=OWNER)
+        assert accepted.status_code == 200
+        body: dict[str, Any] = accepted.json()
+        return body
+
+    def edit_tool(self, app: TestClient) -> tuple[Any, ApiBridge]:
+        bridge = ApiBridge(app)
+        api = ProgramsApi(URL, KEY, opener=urllib.request.build_opener(bridge))
+        return tools(Path(), api)["propose_program_edit"].call, bridge
+
+    def edit(self, live: dict[str, Any], **change: object) -> dict[str, Any]:
+        day = live["days"][0]
+        slot = day["blocks"][0]["exercises"][0]
+        exercise = {
+            "id": slot["id"],
+            "exercise_id": slot["exercise_id"],
+            "sets": 4,
+            "rep_min": 6,
+            "rep_max": 8,
+        }
+        body = {
+            "name": "Push",
+            "days": [{"id": day["id"], "name": "A", "blocks": [{"exercises": [exercise]}]}],
+        }
+        return body | change
+
+    def test_it_is_offered_with_its_own_description_and_schema(self) -> None:
+        offered = tools(Path(), ProgramsApi(URL, KEY))
+        tool = offered["propose_program_edit"]
+        text = json.dumps(tool.input_schema)
+
+        assert (tool.name, tool.description) == ("propose_program_edit", EDIT_DESCRIPTION)
+        assert "$ref" not in text
+        assert "$defs" not in text
+        assert tool.input_schema["required"] == ["name", "days"]
+        exercise = tool.input_schema["properties"]["days"]["items"]["properties"]["blocks"][
+            "items"
+        ]["properties"]["exercises"]["items"]
+        assert "id" in exercise["properties"]
+        assert (
+            "id"
+            not in tools(Path(), ProgramsApi(URL, KEY))["propose_program"].input_schema[
+                "properties"
+            ]["days"]["items"]["properties"]
+        )
+
+    def test_a_writer_alone_offers_only_what_it_writes(self) -> None:
+        def write(_edit: ProgramEdit) -> object:
+            return {"ok": True}
+
+        assert "propose_program" not in tools(Path(), edit_writer=write)
+        assert "propose_program_edit" in tools(Path(), edit_writer=write)
+        assert "propose_program_edit" not in tools(Path(), program_writer=lambda _p: {})
+        call = tools(Path(), edit_writer=write)["propose_program_edit"].call
+        slot = {"exercise_id": 1, "sets": 1, "rep_min": 1, "rep_max": 1}
+        answer = call({"name": "x", "days": [{"name": "A", "blocks": [{"exercises": [slot]}]}]})
+        assert isinstance(answer, dict)
+        assert answer["proposed"] == {"ok": True}
+
+    def test_an_edit_is_saved_through_the_api_and_waits_for_the_owner(
+        self, app: TestClient, live: dict[str, Any]
+    ) -> None:
+        call, bridge = self.edit_tool(app)
+
+        answer = call(self.edit(live))
+
+        proposed = answer["proposed"]
+        assert (proposed["status"], proposed["change"], proposed["previous_id"]) == (
+            "proposed",
+            "edit",
+            live["id"],
+        )
+        found = app.get("/api/programs", headers=OWNER).json()
+        assert found["active"]["id"] == live["id"]  # untouched until approved
+        assert found["proposed"] == proposed
+        (request,) = bridge.requests
+        assert (request.get_method(), request.full_url) == (
+            "PUT",
+            f"{URL}/api/programs/edit-proposal",
+        )
+        assert request.get_header("Authorization") == f"Bearer {KEY}"
+        assert isinstance(request.data, bytes)
+        assert json.loads(request.data) == ProgramEdit.model_validate(self.edit(live)).model_dump(
+            mode="json"
+        )
+
+    def test_no_active_program_is_told_to_the_coach(self, app: TestClient) -> None:
+        call, _ = self.edit_tool(app)
+        bench = ids(app)["Barbell Bench Press"]
+        body = program(bench)
+
+        with pytest.raises(ToolError, match=r"^the program was not saved: there is no program"):
+            call(body)
+
+    def test_an_id_that_is_not_the_live_programs_is_told_to_the_coach(
+        self, app: TestClient, live: dict[str, Any]
+    ) -> None:
+        call, _ = self.edit_tool(app)
+        body = self.edit(live)
+        body["days"][0]["id"] = 424242
+
+        with pytest.raises(ToolError, match="the live program has no day with id 424242"):
+            call(body)
+
+    def test_bad_arguments_never_reach_the_api(self, app: TestClient, live: dict[str, Any]) -> None:
+        call, bridge = self.edit_tool(app)
+        body = self.edit(live)
+        body["days"][0]["id"] = 0
+
+        with pytest.raises(ToolError, match=r"^invalid arguments: days\.0\.id: "):
+            call(body)
+        assert bridge.requests == []

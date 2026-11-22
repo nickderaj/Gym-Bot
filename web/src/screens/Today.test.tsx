@@ -7,7 +7,7 @@ import { addBlock, newDraft, todayDraft } from "../log/draft";
 import type { Draft } from "../log/draft";
 import { finishedHere, markFinished } from "../log/finished";
 import { renderLogging, routeFetch, writes } from "../test/logging";
-import { TODAY, UPPER } from "../test/today";
+import { HYBRID, TODAY, TRAVEL, TRAVEL_ADVANCING, UPPER } from "../test/today";
 import { targetLine } from "./Log";
 import { FINISHED_HERE, LEFT_OVER, RESUME_OFFLINE } from "./Today";
 
@@ -543,7 +543,226 @@ describe("Today", () => {
   });
 });
 
+describe("Gym or travel", () => {
+  it("offers no choice without travel days", async () => {
+    routeFetch({ "GET /api/today": { body: TODAY } });
+    renderLogging();
+
+    await screen.findByRole("heading", { level: 1, name: "Upper A" });
+    expect(screen.queryByRole("group", { name: "Which days" })).not.toBeInTheDocument();
+  });
+
+  it("starts on the gym day and switches to the travel day", async () => {
+    routeFetch({ "GET /api/today": { body: HYBRID } });
+    renderLogging();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Upper A" })).toBeInTheDocument();
+    const choice = screen.getByRole("group", { name: "Which days" });
+    const [gym, travel] = within(choice).getAllByRole("button");
+    expect([gym?.textContent, gym?.getAttribute("aria-pressed")]).toEqual(["Gym", "true"]);
+    expect([travel?.textContent, travel?.getAttribute("aria-pressed")]).toEqual([
+      "Travel",
+      "false",
+    ]);
+    expect(screen.getByText("Day 1 of 4")).toBeInTheDocument();
+
+    fireEvent.click(within(choice).getByRole("button", { name: "Travel" }));
+
+    expect(screen.getByRole("heading", { level: 1, name: "Travel A" })).toBeInTheDocument();
+    expect(screen.getByText("Travel day 1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("Week 2 of 6 · Upper / Lower")).toBeInTheDocument();
+    expect(within(choice).getByRole("button", { name: "Travel" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(choice).getByRole("button", { name: "Gym" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Upper A" })).toBeInTheDocument();
+  });
+
+  it("shows a reps exercise with no kg and its variations", async () => {
+    routeFetch({ "GET /api/today": { body: HYBRID } });
+    renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+
+    const lines = [...document.querySelectorAll(".planned")].map((line) => line.textContent);
+    expect(lines).toEqual([
+      "A Push-upTarget 4 × 10–15Variations: push-up -> feet-elevated -> archerNot done before",
+    ]);
+  });
+
+  it("says to move up to the next variation at the top of the range", async () => {
+    routeFetch({ "GET /api/today": { body: { ...HYBRID, travel_day: TRAVEL_ADVANCING } } });
+    renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+
+    expect(screen.getByText(/Move up: push-up -> feet-elevated/)).toBeInTheDocument();
+  });
+
+  it("starts at the travel day when only travel days are left", async () => {
+    routeFetch({ "GET /api/today": { body: { ...HYBRID, day: null } } });
+    renderLogging();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Travel A" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Gym" }));
+    expect(screen.getByText("The gym days of this block are done.")).toBeInTheDocument();
+  });
+
+  it("says the travel days are done when only gym days are left", async () => {
+    routeFetch({ "GET /api/today": { body: { ...HYBRID, travel_day: null } } });
+    renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+
+    expect(screen.getByText("The travel days of this block are done.")).toBeInTheDocument();
+  });
+
+  it("says the block is done when both sets are", async () => {
+    routeFetch({ "GET /api/today": { body: { ...HYBRID, day: null, travel_day: null } } });
+    renderLogging();
+
+    expect(
+      await screen.findByText("Block complete. Ask the coach for your next program."),
+    ).toBeInTheDocument();
+  });
+
+  it("starts the travel day, checking it with the server first", async () => {
+    const fetchMock = sequence({ "GET /api/today": [HYBRID, HYBRID] });
+    const { outbox, drafts } = renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start this workout" }));
+    await vi.waitFor(() => {
+      expect(window.location.hash).toBe("#/log");
+    });
+
+    const reads = fetchMock.mock.calls.filter(([path]) => path === "/api/today");
+    expect(reads.map(([, init]) => init?.cache)).toEqual([undefined, "no-store"]);
+    expect(drafts.get()?.program).toEqual({ day_id: 21, week: 2 });
+    expect(writes(outbox)).toEqual([
+      [
+        `PUT /api/workouts/${drafts.get()?.id ?? ""}`,
+        { started_at: "2026-10-01T07:00:00.000Z", program: { day_id: 21, week: 2 } },
+      ],
+    ]);
+  });
+
+  it("does not start a travel day that has moved on", async () => {
+    sequence({
+      "GET /api/today": [HYBRID, { ...HYBRID, travel_day: { ...TRAVEL, id: 22, position: 2 } }],
+    });
+    const { outbox, drafts } = renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start this workout" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("The plan had changed");
+    expect(drafts.get()).toBeNull();
+    expect(writes(outbox)).toEqual([]);
+  });
+
+  it("does not start a travel day when the gym day has moved on and none is left", async () => {
+    sequence({ "GET /api/today": [HYBRID, { ...HYBRID, travel_day: null }] });
+    const { drafts } = renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start this workout" }));
+
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    expect(drafts.get()).toBeNull();
+  });
+
+  it("opens on the set being trained, and resumes only that set's workout", async () => {
+    const training = { ...HYBRID, workout_client_id: "w9", training_kind: "travel" as const };
+    sequence({
+      "GET /api/today": [training],
+      "GET /api/workouts/current": [{ ...serverWorkout(), program_day_id: 21, program_week: 2 }],
+    });
+    const { drafts } = renderLogging();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Travel A" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resume this workout" }));
+
+    await vi.waitFor(() => {
+      expect(drafts.get()?.program).toEqual({ day_id: 21, week: 2 });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+  });
+
+  it("holds the other set while a workout is in progress elsewhere", async () => {
+    const training = { ...HYBRID, workout_client_id: "w9", training_kind: "travel" as const };
+    routeFetch({ "GET /api/today": { body: training } });
+    renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Gym" }));
+
+    expect(
+      screen.getByText("A travel workout is in progress. Finish it before starting this one."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start this workout" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume this workout" })).not.toBeInTheDocument();
+  });
+
+  it("treats an unfinished workout from an older server as a gym one", async () => {
+    routeFetch({ "GET /api/today": { body: { ...HYBRID, workout_client_id: "w9" } } });
+    renderLogging();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Upper A" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume this workout" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Travel" }));
+    expect(
+      screen.getByText("A gym workout is in progress. Finish it before starting this one."),
+    ).toBeInTheDocument();
+  });
+
+  it("names the deload effort for both sets", async () => {
+    const deloading = {
+      ...HYBRID,
+      day: { ...UPPER, deload: true, week: 7, deload_rpe: 6 },
+      travel_day: { ...TRAVEL, deload: true, week: 7, deload_rpe: 6 },
+    };
+    routeFetch({ "GET /api/today": { body: deloading } });
+    renderLogging();
+
+    expect(
+      await screen.findByText("Deload week: about half the sets at RPE 6 · Upper / Lower"),
+    ).toHaveClass("deload");
+    fireEvent.click(screen.getByRole("button", { name: "Travel" }));
+    expect(
+      screen.getByText("Deload week: about half the sets at RPE 6 · Upper / Lower"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the advance decision while logging a travel day", async () => {
+    sequence({ "GET /api/today": [{ ...HYBRID, travel_day: TRAVEL_ADVANCING }] });
+    renderLogging();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Travel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start this workout" }));
+
+    expect(
+      await screen.findByText("Top of the range: take the next variation"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Target 4 × 10–15")).toBeInTheDocument();
+  });
+});
+
 describe("Home", () => {
+  it("names the next travel day beside the gym day", async () => {
+    window.location.hash = "";
+    routeFetch({
+      "GET /api/today": { body: HYBRID },
+      "GET /api/workouts?limit=500": { body: [] },
+      "GET /api/workouts/current": { body: null },
+    });
+    renderLogging();
+
+    const card = await screen.findByRole("link", { name: /Next in your program/ });
+    expect(card).toHaveTextContent("Upper A · Week 2");
+    expect(card).toHaveTextContent("Travel: Travel A");
+  });
+
   it("points to the next program day", async () => {
     window.location.hash = "";
     routeFetch({

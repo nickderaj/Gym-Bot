@@ -16,11 +16,12 @@ from typing import TYPE_CHECKING, Any
 from trainer.mcp.protocol import ToolError
 
 if TYPE_CHECKING:
-    from trainer.services.programs import ProgramIn
+    from pydantic import BaseModel
 
 # Saving a program is one quick write; the coach's tool call times out at 30 s.
 TIMEOUT_S = 20.0
 PROPOSAL_PATH = "/api/programs/proposal"
+EDIT_PATH = "/api/programs/edit-proposal"
 JSON = "application/json"
 
 
@@ -40,18 +41,30 @@ class ProgramsApi:
         # No proxies, whatever the environment says: the key goes to the API alone.
         self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def propose(self, program: ProgramIn) -> object:
+    def propose(self, program: BaseModel) -> object:
         """Save ``program`` as the proposal; return it as the API saved it.
 
         Raises:
             ToolError: with the API's reason if it refused the program, or if it
                 could not be reached.
         """
+        return self._send(PROPOSAL_PATH, program)
+
+    def propose_edit(self, edit: BaseModel) -> object:
+        """Save ``edit`` of the active program as the proposal; return it as the API saved it.
+
+        Raises:
+            ToolError: with the API's reason if it refused the edit, or if it
+                could not be reached.
+        """
+        return self._send(EDIT_PATH, edit)
+
+    def _send(self, path: str, program: BaseModel) -> object:
         # pragma: no mutate start  # why: urllib capitalises header names; case mutants are equal
         headers = {"Authorization": f"Bearer {self._key}", "Content-Type": JSON, "Accept": JSON}
         # pragma: no mutate end  # why: closes the block above
         request = urllib.request.Request(  # noqa: S310  # why: the URL is the configured loopback API
-            self._base_url + PROPOSAL_PATH,
+            self._base_url + path,
             data=program.model_dump_json().encode(),
             headers=headers,
             method="PUT",

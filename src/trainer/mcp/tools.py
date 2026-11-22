@@ -5,12 +5,13 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from trainer.mcp.protocol import Json, Tool, ToolError
-from trainer.services.programs import ProgramIn, programs
+from trainer.services.programs import ProgramEdit, ProgramIn, programs
 from trainer.storage.database import connect_readonly
 from trainer.storage.history import (
     WorkoutNotFoundError,
@@ -20,6 +21,7 @@ from trainer.storage.history import (
     list_workouts,
 )
 from trainer.storage.profile import read_profile
+from trainer.storage.programs import Change
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -128,6 +130,7 @@ def _day_summary(day: ProgramDay) -> dict[str, object]:
                         "sets": exercise.sets,
                         "rep_min": exercise.rep_min,
                         "rep_max": exercise.rep_max,
+                        "progression": exercise.progression,
                     }
                     for exercise in block.exercises
                 ],
@@ -138,7 +141,7 @@ def _day_summary(day: ProgramDay) -> dict[str, object]:
 
 
 def _current_program(conn: sqlite3.Connection, arguments: CurrentProgram) -> object:
-    found = programs(conn)
+    found = programs(conn, datetime.now(UTC))
     if arguments.detail == "full":
         return asdict(found)
     # Every request carries the whole conversation, tool results included, so the
@@ -151,14 +154,22 @@ def _current_program(conn: sqlite3.Connection, arguments: CurrentProgram) -> obj
         if active is None
         else {
             "name": active.name,
+            "version": active.version,
             "training_weeks": active.training_weeks,
             "started_at": active.started_at,
             "days": [_day_summary(day) for day in active.days],
+            "travel_days": [_day_summary(day) for day in active.travel_days],
         },
         "next": None if found.next is None else asdict(found.next),
+        "next_travel": None if found.next_travel is None else asdict(found.next_travel),
         "proposed": None
         if proposed is None
-        else {"name": proposed.name, "days": [day.name for day in proposed.days]},
+        else {
+            "name": proposed.name,
+            "edit": proposed.change is Change.EDIT,
+            "days": [day.name for day in proposed.days],
+            "travel_days": [day.name for day in proposed.travel_days],
+        },
     }
 
 
@@ -204,14 +215,19 @@ _TOOLS: dict[str, tuple[str, type[_Arguments], Callable[[sqlite3.Connection, Any
     ),
     "current_program": (
         (
-            "The program being trained (active), with every day, block and exercise: "
+            "The program being trained (active), with every gym day (days) and travel day "
+            "(travel_days, empty if it has none), each with its blocks and exercises: "
             "the day's id, each exercise's id (its block exercise) and exercise_id, sets, "
-            "rep_min-rep_max (seconds if timed), rest_s; a block of more "
-            "than one exercise is a superset. Also the next week and day to train (next; "
-            "week 7 is the deload week), and any proposal still waiting for the owner "
-            "(proposed: its name and days). detail=full adds the program's and each "
-            "exercise's notes, start_load_kg and the whole proposal: read it with "
-            "detail=full before proposing a change to a program."
+            "rep_min-rep_max (seconds if timed), progression (load, or reps for "
+            "bodyweight/band), rest_s; a block of more than one exercise is a superset. "
+            "Gym and travel days rotate separately, so there are two next positions: next "
+            "(the next gym day) and next_travel (the next travel day; null without travel "
+            "days), each as {week, day} (day counts within its set; week 7 is the deload "
+            "week, for both sets). A workout's program_week is the week of the set's next. "
+            "Also any proposal still waiting for the owner (proposed: its name, days, "
+            "travel_days and whether it is an edit). detail=full adds the program's and each "
+            "exercise's notes, variations, start_load_kg and the whole proposal: read it "
+            "with detail=full before proposing a change to a program."
         ),
         CurrentProgram,
         _current_program,
@@ -221,13 +237,31 @@ _TOOLS: dict[str, tuple[str, type[_Arguments], Callable[[sqlite3.Connection, Any
 
 PROPOSE_DESCRIPTION = (
     "Propose a training program for the owner to accept in the app's Program screen. It "
-    "replaces any earlier proposal and never changes the program being trained. A program "
-    "is six training weeks then a deload week; its days repeat every week in order. A day "
-    "is blocks in order: one exercise, or two or three done as a superset. Use exercise ids "
-    "from list_exercises. Give each exercise its sets and a rep range (seconds for a timed "
-    "exercise). The app sets every load after the first session from the log, by double "
-    "progression, so give start_load_kg only for the first session, from exercise_history. "
-    "To refine a proposal, propose it again in full."
+    "replaces any earlier proposal and never changes the program being trained; accepting "
+    "it starts a brand-new program at week 1 (to change the live program, use "
+    "propose_program_edit instead). A program is six training weeks then a deload week; "
+    "its days repeat every week in order. A day is blocks in order: one exercise, or two "
+    "or three done as a superset. Use exercise ids from list_exercises. Give each exercise "
+    "its sets and a rep range (seconds for a timed exercise). The app sets every load after "
+    "the first session from the log, by double progression, so give start_load_kg only for "
+    "the first session, from exercise_history. Optionally add travel_days: a second set of "
+    "days (say three full-body band or bodyweight days) for when there is no gym. For "
+    "those, set progression to reps on an exercise to progress by reps with no kg load, "
+    "and put the harder variations in variations (e.g. 'push-up -> feet-elevated -> "
+    "archer'). To refine a proposal, propose it again in full."
+)
+
+EDIT_DESCRIPTION = (
+    "Propose an edit of the program being trained, for the owner to approve in the app's "
+    "Program screen. Approving applies it as an edit, not a restart: the current week, the "
+    "next gym day and next travel day, the logged history and every kept exercise's "
+    "progression carry over, and the old version is kept for history. Read current_program "
+    "with detail=full first, then send the whole program as it should be: days, "
+    "travel_days, blocks and exercises left out are removed. Give an existing day's or "
+    "exercise's id (from current_program) to keep it; leave id out to add a new one. A new "
+    "exercise starts from the exercise's last logged load if there is one, else its "
+    "start_load_kg. It replaces any earlier proposal and never changes the live program "
+    "itself. Same fields as propose_program."
 )
 
 
@@ -235,21 +269,33 @@ def tools(
     database: Path,
     programs_api: ProgramsApi | None = None,
     program_writer: Callable[[ProgramIn], object] | None = None,
+    edit_writer: Callable[[ProgramEdit], object] | None = None,
 ) -> dict[str, Tool]:
     """The tool set over the database at ``database``.
 
-    Read tools open it read-only per call. ``propose_program`` is offered when
-    ``programs_api`` or ``program_writer`` is given; ``programs_api`` wins if both are.
+    Read tools open it read-only per call. ``propose_program`` and
+    ``propose_program_edit`` are offered when ``programs_api`` (or the matching
+    writer: ``program_writer``, ``edit_writer``) is given; ``programs_api`` wins.
     """
     found = {
         name: Tool(name, description, model.model_json_schema(), _caller(database, model, answer))
         for name, (description, model, answer) in _TOOLS.items()
     }
     if programs_api is not None or program_writer is not None:
-        schema = inline_refs(ProgramIn.model_json_schema())
         writer = programs_api.propose if programs_api is not None else program_writer
         found["propose_program"] = Tool(
-            "propose_program", PROPOSE_DESCRIPTION, schema, _proposer(writer)
+            "propose_program",
+            PROPOSE_DESCRIPTION,
+            inline_refs(ProgramIn.model_json_schema()),
+            _proposer(ProgramIn, writer),
+        )
+    if programs_api is not None or edit_writer is not None:
+        edit = programs_api.propose_edit if programs_api is not None else edit_writer
+        found["propose_program_edit"] = Tool(
+            "propose_program_edit",
+            EDIT_DESCRIPTION,
+            inline_refs(ProgramEdit.model_json_schema()),
+            _proposer(ProgramEdit, edit),
         )
     return found
 
@@ -275,10 +321,12 @@ def _resolve(node: object, definitions: Json) -> object:
     return {key: _resolve(value, definitions) for key, value in node.items()}
 
 
-def _proposer(writer: Callable[[ProgramIn], object] | None) -> Callable[[Json], object]:
+def _proposer[Proposal: BaseModel](
+    model: type[Proposal], writer: Callable[[Proposal], object] | None
+) -> Callable[[Json], object]:
     def call(arguments: Json) -> object:
         try:
-            program = ProgramIn.model_validate(arguments)
+            program = model.model_validate(arguments)
         except ValidationError as error:
             raise ToolError(_describe(error)) from error
         if writer is None:

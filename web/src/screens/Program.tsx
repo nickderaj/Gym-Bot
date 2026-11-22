@@ -1,20 +1,27 @@
 import { useRef, useState } from "react";
 import type { ReactElement } from "react";
 
-import { askCoach, changeProgram, programsSchema, useApi, useReplyClaim } from "../api";
-import type { CoachMessage, Position, Program as ProgramData, ProgramDay } from "../api";
+import {
+  askCoach,
+  changeProgram,
+  programsSchema,
+  restartProgram,
+  useApi,
+  useReplyClaim,
+  versionsSchema,
+} from "../api";
+import type {
+  CoachMessage,
+  Position,
+  Program as ProgramData,
+  ProgramDay,
+  ProgramExercise,
+} from "../api";
 import { Load, tone } from "../components";
-import { formatDay } from "../format";
+import { formatDay, plural } from "../format";
 import { href } from "../router";
-
-/**
- * "A", "B", … for blocks; a superset's exercises are "A1", "A2", …
- *
- * @internal Exported for tests.
- */
-export function blockLetter(index: number): string {
-  return String.fromCharCode(65 + index);
-}
+import { ProgramEditor } from "./ProgramEditor";
+import { blockLetter } from "./programEdit";
 
 /**
  * "3 × 8–12", or "2 × 30–45 s" for a timed exercise; one number when the range is one.
@@ -35,13 +42,25 @@ export function formatPrescription(exercise: {
   return `${String(exercise.sets)} × ${range}${unit}`;
 }
 
+/** What an exercise shows beside its prescription: the load it starts at, or reps only. */
+function startNote(exercise: ProgramExercise, starting: boolean): string {
+  if (exercise.progression === "reps") {
+    return " · reps only";
+  }
+  return starting && exercise.start_load_kg !== null
+    ? ` · ${String(exercise.start_load_kg)} kg`
+    : "";
+}
+
 function Day({
   day,
+  label,
   number,
   next,
   starting,
 }: {
   day: ProgramDay;
+  label: string;
   number: number;
   next: boolean;
   starting: boolean;
@@ -49,7 +68,9 @@ function Day({
   return (
     <li className="card program-day" aria-current={next ? "step" : undefined}>
       <h3>
-        <span className="muted">Day {number}</span>{" "}
+        <span className="muted">
+          {label} {number}
+        </span>{" "}
         {/* The next day opens Today, where it is started; the link covers the card. */}
         {next ? (
           <a className="day-link" href={href({ name: "today" })}>
@@ -82,12 +103,13 @@ function Day({
                         {superset ? `${letter}${String(position + 1)}` : letter}
                       </span>{" "}
                       {exercise.name}
+                      {exercise.variations === null ? null : (
+                        <span className="muted variations"> {exercise.variations}</span>
+                      )}
                     </span>
                     <span className="best">
                       {formatPrescription(exercise)}
-                      {starting && exercise.start_load_kg !== null
-                        ? ` · ${String(exercise.start_load_kg)} kg`
-                        : null}
+                      {startNote(exercise, starting)}
                     </span>
                   </li>
                 ))}
@@ -102,26 +124,59 @@ function Day({
 }
 
 function Days({
-  program,
+  days,
+  label = "Day",
   next,
   starting,
 }: {
-  program: ProgramData;
+  days: ProgramDay[];
+  label?: string;
   next: Position | null;
   starting: boolean;
 }): ReactElement {
   return (
     <ol className="list program-days">
-      {program.days.map((day, index) => (
+      {days.map((day, index) => (
         <Day
           key={day.id}
           day={day}
+          label={label}
           number={index + 1}
           next={next?.day === index + 1}
           starting={starting}
         />
       ))}
     </ol>
+  );
+}
+
+/** The gym days, and the travel days under their own heading when there are any. */
+function AllDays({
+  program,
+  next,
+  nextTravel,
+  starting,
+}: {
+  program: ProgramData;
+  next: Position | null;
+  nextTravel: Position | null;
+  starting: boolean;
+}): ReactElement {
+  return (
+    <>
+      <Days days={program.days} next={next} starting={starting} />
+      {program.travel_days.length === 0 ? null : (
+        <section aria-label="Travel days">
+          <h2 className="subhead">Travel days</h2>
+          <Days
+            days={program.travel_days}
+            label="Travel day"
+            next={nextTravel}
+            starting={starting}
+          />
+        </section>
+      )}
+    </>
   );
 }
 
@@ -147,37 +202,254 @@ function Weeks({ weeks, current }: { weeks: number; current: number | null }): R
   );
 }
 
-function where(program: ProgramData, next: Position | null): string {
-  if (next === null) {
-    return "Block complete. Ask the coach for your next program.";
-  }
-  const day = program.days[next.day - 1]?.name ?? "";
-  if (next.week > program.training_weeks) {
-    return `Deload week: the same days, fewer sets and lighter. Next: ${day}.`;
-  }
-  return `Week ${String(next.week)} of ${String(program.training_weeks)}. Next: ${day}.`;
+function nameAt(days: ProgramDay[], position: Position | null): string | null {
+  return position === null ? null : (days[position.day - 1]?.name ?? null);
 }
 
-function Active({ program, next }: { program: ProgramData; next: Position | null }): ReactElement {
+/** The week the next sessions fall in: the earlier of the two sets', or null once done. */
+function currentWeek(next: Position | null, nextTravel: Position | null): number | null {
+  const weeks = [next, nextTravel].flatMap((position) =>
+    position === null ? [] : [position.week],
+  );
+  return weeks.length === 0 ? null : Math.min(...weeks);
+}
+
+/** "Next: Lower. Next travel: Travel B." */
+function upNext(program: ProgramData, next: Position | null, nextTravel: Position | null): string {
+  const gym = nameAt(program.days, next);
+  const travel = nameAt(program.travel_days, nextTravel);
+  return [gym === null ? null : `Next: ${gym}.`, travel === null ? null : `Next travel: ${travel}.`]
+    .filter((line) => line !== null)
+    .join(" ");
+}
+
+function where(program: ProgramData, next: Position | null, nextTravel: Position | null): string {
+  const week = currentWeek(next, nextTravel);
+  if (week === null) {
+    return "Block complete. Ask the coach for your next program.";
+  }
+  const following = upNext(program, next, nextTravel);
+  if (week > program.training_weeks) {
+    return `Deload week: the same days, about half the sets at RPE 6. ${following}`;
+  }
+  return `Week ${String(week)} of ${String(program.training_weeks)}. ${following}`;
+}
+
+/** What each version of the program was: its edits and restarts, newest first. */
+function Versions({ program }: { program: ProgramData }): ReactElement | null {
+  const state = useApi("/api/programs/versions", versionsSchema);
+  if (program.version < 2 || state.status !== "ready") {
+    return null;
+  }
+  const labels = { new: "Started", edit: "Edited", restart: "Restarted" };
+  return (
+    <details className="card versions">
+      <summary>Version history</summary>
+      <ol className="lines">
+        {state.data.map((version) => (
+          <li key={version.id}>
+            <span>
+              Version {version.version} · {labels[version.change]} {formatDay(version.started_at)}
+              {version.current ? " · current" : ""}
+            </span>
+            <span className="best">{plural(version.workouts, "workout")}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+type Mode = "view" | "edit" | "restart";
+
+function RestartAsk({
+  name,
+  busy,
+  onYes,
+  onNo,
+}: {
+  name: string;
+  busy: boolean;
+  onYes: () => void;
+  onNo: () => void;
+}): ReactElement {
+  return (
+    <div className="notice tint" style={tone("red")} role="group" aria-label="Restart">
+      <p>
+        Restart “{name}”? You go back to week 1, day 1 of both gym and travel days, with the same
+        days. Your logged history is kept, and each exercise starts again from the load you last
+        logged.
+      </p>
+      <div className="row-actions">
+        <button type="button" className="primary" disabled={busy} onClick={onYes}>
+          Yes, restart
+        </button>
+        <button type="button" className="link" disabled={busy} onClick={onNo}>
+          Keep going
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Actions({
+  program,
+  mode,
+  setMode,
+  onChanged,
+}: {
+  program: ProgramData;
+  mode: Mode;
+  setMode: (mode: Mode) => void;
+  onChanged: () => void;
+}): ReactElement | null {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const restart = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    const result = await restartProgram();
+    setBusy(false);
+    if (result.kind === "ok") {
+      onChanged();
+      return;
+    }
+    setMode("view");
+    setError(result.message);
+  };
+  if (mode === "edit") {
+    return null;
+  }
+  return (
+    <>
+      {mode === "restart" ? (
+        <RestartAsk
+          name={program.name}
+          busy={busy}
+          onYes={() => {
+            void restart();
+          }}
+          onNo={() => {
+            setMode("view");
+          }}
+        />
+      ) : (
+        <div className="row-actions program-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setMode("edit");
+            }}
+          >
+            Edit program
+          </button>
+          <button
+            type="button"
+            className="link danger"
+            onClick={() => {
+              setError(null);
+              setMode("restart");
+            }}
+          >
+            Restart program
+          </button>
+        </div>
+      )}
+      {error === null ? null : (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </>
+  );
+}
+
+function Head({
+  program,
+  position,
+  mode,
+  setMode,
+  onChanged,
+}: {
+  program: ProgramData;
+  position: { next: Position | null; nextTravel: Position | null };
+  mode: Mode;
+  setMode: (mode: Mode) => void;
+  onChanged: () => void;
+}): ReactElement {
+  const { next, nextTravel } = position;
+  const week = currentWeek(next, nextTravel);
+  return (
+    <div className="card program-head">
+      <h2>{program.name}</h2>
+      {program.started_at === null ? null : (
+        <p className="muted">Started {formatDay(program.started_at)}</p>
+      )}
+      <Weeks weeks={program.training_weeks} current={week} />
+      <p className={week !== null && week > program.training_weeks ? "deload" : undefined}>
+        {where(program, next, nextTravel)}
+      </p>
+      {program.notes === null ? null : <p className="notes">{program.notes}</p>}
+      <Actions program={program} mode={mode} setMode={setMode} onChanged={onChanged} />
+    </div>
+  );
+}
+
+function Active({
+  program,
+  next,
+  nextTravel,
+  onChanged,
+}: {
+  program: ProgramData;
+  next: Position | null;
+  nextTravel: Position | null;
+  onChanged: () => void;
+}): ReactElement {
+  const [mode, setMode] = useState<Mode>("view");
   return (
     <section aria-label="Current program">
-      <div className="card program-head">
-        <h2>{program.name}</h2>
-        {program.started_at === null ? null : (
-          <p className="muted">Started {formatDay(program.started_at)}</p>
-        )}
-        <Weeks weeks={program.training_weeks} current={next?.week ?? null} />
-        <p className={next !== null && next.week > program.training_weeks ? "deload" : undefined}>
-          {where(program, next)}
-        </p>
-        {program.notes === null ? null : <p className="notes">{program.notes}</p>}
-      </div>
-      <Days program={program} next={next} starting={false} />
+      <Head
+        program={program}
+        position={{ next, nextTravel }}
+        mode={mode}
+        setMode={setMode}
+        onChanged={onChanged}
+      />
+      {mode === "edit" ? (
+        <ProgramEditor
+          program={program}
+          onSaved={onChanged}
+          onCancel={() => {
+            setMode("view");
+          }}
+        />
+      ) : (
+        <AllDays program={program} next={next} nextTravel={nextTravel} starting={false} />
+      )}
+      <Versions program={program} />
     </section>
   );
 }
 
 type Asking = "idle" | "accept" | "decline";
+
+/** How a proposal introduces itself: a new program to start, or an edit of the live one. */
+function proposalWords(program: ProgramData): { label: string; eyebrow: string; note: string } {
+  if (program.change === "edit") {
+    return {
+      label: "Proposed edit",
+      eyebrow: "Edit proposed by your coach",
+      note: "Applying it changes your program as shown. Your week, next days, history and each kept exercise’s progression stay.",
+    };
+  }
+  return {
+    label: "Proposed program",
+    eyebrow: "Proposed by your coach",
+    note: `${String(program.training_weeks)} training weeks, then a deload week. Loads after the first session follow your log.`,
+  };
+}
 
 function Proposal({
   program,
@@ -215,17 +487,17 @@ function Proposal({
   const accept = (): void => {
     void change({ accept: program.id });
   };
+  // An edit applies to the live program, which keeps its place: nothing to replace.
+  const edit = program.change === "edit";
+  const words = proposalWords(program);
 
   return (
-    <section className="card proposal tint" style={tone("peach")} aria-label="Proposed program">
-      <p className="eyebrow">Proposed by your coach</p>
+    <section className="card proposal tint" style={tone("peach")} aria-label={words.label}>
+      <p className="eyebrow">{words.eyebrow}</p>
       <h2>{program.name}</h2>
       {program.notes === null ? null : <p className="notes">{program.notes}</p>}
-      <p className="muted">
-        {String(program.training_weeks)} training weeks, then a deload week. Loads after the first
-        session follow your log.
-      </p>
-      <Days program={program} next={null} starting={true} />
+      <p className="muted">{words.note}</p>
+      <AllDays program={program} next={null} nextTravel={null} starting={true} />
       {asking === "accept" ? (
         <div className="notice tint" style={tone("red")} role="group" aria-label="Replace">
           <p>
@@ -282,14 +554,14 @@ function Proposal({
             className="primary"
             disabled={busy}
             onClick={() => {
-              if (replaces === null) {
+              if (replaces === null || edit) {
                 accept();
               } else {
                 setAsking("accept");
               }
             }}
           >
-            Start this program
+            {edit ? "Apply this edit" : "Start this program"}
           </button>
           <button
             type="button"
@@ -426,11 +698,13 @@ function Programs({
   active,
   proposed,
   next,
+  nextTravel,
   onChanged,
 }: {
   active: ProgramData | null;
   proposed: ProgramData | null;
   next: Position | null;
+  nextTravel: Position | null;
   onChanged: () => void;
 }): ReactElement {
   return (
@@ -441,7 +715,7 @@ function Programs({
       {active === null ? (
         <p className="muted">No program yet.</p>
       ) : (
-        <Active program={active} next={next} />
+        <Active program={active} next={next} nextTravel={nextTravel} onChanged={onChanged} />
       )}
     </>
   );
@@ -465,6 +739,7 @@ function Loaded({
             active={programs.active}
             proposed={programs.proposed}
             next={programs.next}
+            nextTravel={programs.next_travel}
             onChanged={onChanged}
           />
         )}

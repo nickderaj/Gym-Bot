@@ -217,7 +217,12 @@ def test_a_log_that_cannot_be_read_is_reported(tmp_path: Path) -> None:
 
 
 def test_current_program_without_one(database: Path) -> None:
-    assert call(database, "current_program") == {"active": None, "proposed": None, "next": None}
+    assert call(database, "current_program") == {
+        "active": None,
+        "next": None,
+        "next_travel": None,
+        "proposed": None,
+    }
 
 
 def _programs(imported: sqlite3.Connection) -> int:
@@ -266,6 +271,7 @@ def test_current_program_summary(imported: sqlite3.Connection, tmp_path: Path) -
     assert answer == {
         "active": {
             "name": "Now",
+            "version": 1,
             "training_weeks": 6,
             "started_at": "2026-10-01T00:00:00+00:00",
             "days": [
@@ -284,15 +290,23 @@ def test_current_program_summary(imported: sqlite3.Connection, tmp_path: Path) -
                                     "sets": 3,
                                     "rep_min": 8,
                                     "rep_max": 10,
+                                    "progression": "load",
                                 }
                             ],
                         }
                     ],
                 }
             ],
+            "travel_days": [],
         },
         "next": {"week": 1, "day": 1},
-        "proposed": {"name": "Next", "days": ["Push", "Push"]},
+        "next_travel": None,
+        "proposed": {
+            "name": "Next",
+            "edit": False,
+            "days": ["Push", "Push"],
+            "travel_days": [],
+        },
     }
 
 
@@ -330,11 +344,11 @@ def test_program_proposer_reports_missing_writer_and_writer_failure() -> None:
         ],
     }
     with pytest.raises(ToolError, match=r"^program proposals are not configured$"):
-        _proposer(None)(program)
+        _proposer(ProgramIn, None)(program)
 
     def fail(_program: ProgramIn) -> object:
         failure = RuntimeError("disk unavailable")
         raise failure
 
     with pytest.raises(ToolError, match=r"^the program was not saved: disk unavailable$"):
-        _proposer(fail)(program)
+        _proposer(ProgramIn, fail)(program)

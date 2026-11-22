@@ -10,6 +10,7 @@ from trainer.storage.catalogue import ExerciseSpec, upsert_exercise
 from trainer.storage.journal import ProgramLink, SetValues, save_set, save_workout
 from trainer.storage.programs import (
     BlockSpec,
+    DayKind,
     DayProgram,
     DaySpec,
     Program,
@@ -114,6 +115,7 @@ def test_a_program_round_trips(db: sqlite3.Connection, ids: dict[str, int]) -> N
                                 60.0,
                                 "pause",
                                 2.5,
+                                slot_key=slots[0],
                             )
                         ],
                     ),
@@ -131,7 +133,8 @@ def test_a_program_round_trips(db: sqlite3.Connection, ids: dict[str, int]) -> N
                                 12,
                                 None,
                                 None,
-                                1.0,  # its own step wins over the cable's
+                                1.0,
+                                slot_key=slots[1],
                             ),
                             ProgramExercise(
                                 slots[2],
@@ -145,10 +148,12 @@ def test_a_program_round_trips(db: sqlite3.Connection, ids: dict[str, int]) -> N
                                 None,
                                 None,
                                 None,
+                                slot_key=slots[2],
                             ),
                         ],
                     ),
                 ],
+                day_key=days[0][0],
             ),
             ProgramDay(
                 days[1][0],
@@ -169,12 +174,15 @@ def test_a_program_round_trips(db: sqlite3.Connection, ids: dict[str, int]) -> N
                                 None,
                                 None,
                                 2.5,
+                                slot_key=slots[3],
                             )
                         ],
                     )
                 ],
+                day_key=days[1][0],
             ),
         ],
+        lineage_id=program_id,
     )
 
 
@@ -285,32 +293,32 @@ def trained(db: sqlite3.Connection, ids: dict[str, int]) -> Trained:
 
 class TestLastPosition:
     def test_nothing_done_yet(self, trained: Trained) -> None:
-        assert last_position(trained.db, trained.program.id) is None
+        assert last_position(trained.db, trained.program.id, DayKind.GYM) is None
 
     def test_the_latest_finished_workout(self, trained: Trained) -> None:
         trained.workout("2026-10-01T08:00:00+00:00", (1, 0), finished=True)
         trained.workout("2026-10-03T08:00:00+00:00", (1, 1), finished=True)
         trained.workout("2026-10-02T08:00:00+00:00", (2, 0), finished=True)  # logged late
 
-        assert last_position(trained.db, trained.program.id) == Position(1, 2)
+        assert last_position(trained.db, trained.program.id, DayKind.GYM) == Position(1, 2)
 
     def test_the_later_id_breaks_a_tie(self, trained: Trained) -> None:
         trained.workout("2026-10-01T08:00:00+00:00", (1, 1), finished=True)
         trained.workout("2026-10-01T08:00:00+00:00", (2, 0), finished=True)
 
-        assert last_position(trained.db, trained.program.id) == Position(2, 1)
+        assert last_position(trained.db, trained.program.id, DayKind.GYM) == Position(2, 1)
 
     def test_unfinished_and_unlinked_workouts_do_not_count(self, trained: Trained) -> None:
         trained.workout("2026-10-01T08:00:00+00:00", (1, 0), finished=True)
         trained.workout("2026-10-02T08:00:00+00:00", (1, 1), finished=False)
         trained.workout("2026-10-03T08:00:00+00:00", None, finished=True)
 
-        assert last_position(trained.db, trained.program.id) == Position(1, 1)
+        assert last_position(trained.db, trained.program.id, DayKind.GYM) == Position(1, 1)
 
     def test_another_programs_workouts_do_not_count(self, trained: Trained) -> None:
         trained.workout("2026-10-01T08:00:00+00:00", (3, 1), finished=True)
 
-        assert last_position(trained.db, trained.program.id + 1) is None
+        assert last_position(trained.db, trained.program.id + 1, DayKind.GYM) is None
 
 
 class TestLastSlotSets:

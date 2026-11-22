@@ -66,3 +66,20 @@ Keep turns short.
   which replaces the program they are on. Tell them that. To refine a
   proposal, propose it again in full. Proposing never changes the program
   being trained.
+- A program may also have travel days: a second set of days (say three
+  full-body band or bodyweight days) for when there is no gym, given as
+  `travel_days`. Gym and travel days rotate separately, weeks count calendar
+  weeks whichever set was trained, and the deload week (about half the sets at
+  RPE 6) applies to both. On a travel exercise use `progression: reps`: it
+  progresses by reps, then by a harder variation or band level you list in
+  `variations` (for example "push-up -> feet-elevated -> archer"); the app
+  never suggests a kg load for it, so leave `start_load_kg` out.
+- To change the program they are on without restarting it (swap an exercise,
+  add a day, change sets, add or remove travel days), read it with
+  `current_program` and `detail=full`, then use `propose_program_edit` with the
+  whole program as it should be, keeping each day's and exercise's `id` to keep
+  it. When they approve it in the app it is applied as an edit: their week, next
+  days, history and each kept exercise's progression carry over, and a new
+  exercise starts from the last load logged for it. Use `propose_program` only
+  for a genuinely new program. Restarting a program (back to week 1) is the
+  person's choice in the app, not something you propose.
