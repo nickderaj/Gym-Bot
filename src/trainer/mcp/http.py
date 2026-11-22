@@ -14,12 +14,15 @@ from fastapi import APIRouter, Request, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from trainer.mcp.protocol import Json, Tool, ToolError, handle_line
-from trainer.mcp.tools import tools
+from trainer.mcp.tools import duplicate_refusal, tools
 from trainer.services.journal import (
+    DuplicateExerciseError,
+    ExerciseIn,
     InvalidSetError,
     InvalidWorkoutError,
     NotFoundError,
     StaleProgramDayError,
+    add_exercise,
     record_set,
     record_workout,
 )
@@ -35,6 +38,7 @@ from trainer.storage.database import connect
 from trainer.storage.journal import JournalConflictError, ProgramLink, SetValues
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 router = APIRouter()
@@ -177,8 +181,28 @@ def _parse_error() -> Response:
     )
 
 
+def _exercise_writer(database: Path) -> Callable[[ExerciseIn], object]:
+    """Add an exercise to the catalogue at ``database``, refusing duplicates with their ids."""
+
+    def write_exercise(exercise: ExerciseIn) -> object:
+        try:
+            with closing(connect(database)) as conn:
+                added = add_exercise(
+                    conn, exercise.new_exercise(), allow_similar=exercise.allow_similar
+                )
+        except DuplicateExerciseError as error:
+            matches = [(match.id, match.name, match.equipment) for match in error.matches]
+            raise ToolError(duplicate_refusal(exact=error.exact, matches=matches)) from error
+        except sqlite3.Error as error:
+            message = "the exercise was not saved"
+            raise ToolError(message) from error
+        return asdict(added)
+
+    return write_exercise
+
+
 def _remote_tools(database: Path) -> dict[str, Tool]:
-    """Read tools, program proposals and workout writes for one database."""
+    """Read tools, program proposals, new exercises and workout writes for one database."""
 
     def write_program(program: ProgramIn) -> object:
         try:
@@ -202,7 +226,12 @@ def _remote_tools(database: Path) -> dict[str, Tool]:
             raise ToolError(message) from error
 
     return {
-        **tools(database, program_writer=write_program, edit_writer=write_edit),
+        **tools(
+            database,
+            program_writer=write_program,
+            edit_writer=write_edit,
+            exercise_writer=_exercise_writer(database),
+        ),
         **_journal_tools(database),
     }
 

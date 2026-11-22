@@ -78,7 +78,10 @@ The same API process serves a stateless Streamable HTTP MCP endpoint at `/mcp`
 (no trailing slash). It is not a second socket and it is not bound to a public
 address. It uses the trainer's existing tool definitions and adds
 `record_workout` and `record_set` for writing workout entries and correcting
-sets. `propose_program` creates a proposal for review in the app. Bots cannot
+sets. `propose_program` creates a proposal for review in the app.
+`add_exercise` adds an exercise to the catalogue; like the app, it refuses a
+name that is taken or one that looks like an existing exercise (naming the
+matches' ids) unless `allow_similar` is set. Bots cannot
 activate a program, archive one, or delete a workout or a set. The web API and
 the phone stay owner-only; the MCP key does not authorize them, and the owner's
 Tailscale identity does not authorize `/mcp`.
@@ -216,12 +219,14 @@ from there only while its `-wal` and `-shm` files exist, so the API holds one
 connection open for as long as it runs, and `trainer-coach` starts after it.
 If the API is down, the tools answer that the log cannot be read.
 
-**Proposing a program.** The seventh and eighth tools, `propose_program` and
-`propose_program_edit`, are the coach's only writes. They send the program (or
-the edit of the program being trained) to the API at `TRAINER_API_URL` (the API's
-loopback address, set by `trainer-coach.service`) with the gateway's key, which
-the API accepts on `PUT /api/programs/proposal` and `PUT
-/api/programs/edit-proposal` and nowhere else. The API saves it as a proposal;
+**Proposing a program and adding exercises.** The seventh to ninth tools,
+`propose_program`, `propose_program_edit` and `add_exercise`, are the coach's
+only writes. They send the program (or the edit of the program being trained,
+or the new exercise) to the API at `TRAINER_API_URL` (the API's loopback
+address, set by `trainer-coach.service`) with the gateway's key, which the API
+accepts on `PUT /api/programs/proposal`, `PUT /api/programs/edit-proposal` and
+`POST /api/exercises` and nowhere else. A new exercise goes through the same
+duplicate checks as one added in the app. The API saves it as a proposal;
 the owner accepts it in the app (an edit is applied as an edit, keeping the
 program's place and history, not as a restart). `hermes/config.yaml` passes the URL
 and the key to the tool server as its only environment besides the data

@@ -8,18 +8,17 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime  # noqa: TC003  # why: FastAPI reads the annotation at runtime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Self
 from uuid import UUID  # noqa: TC003  # why: FastAPI reads the annotation at runtime
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import AwareDatetime, BaseModel, Field, StringConstraints, model_validator
 
-from trainer.domain.exercises import Equipment, Measure
 from trainer.services.journal import (
     DuplicateExerciseError,
+    ExerciseIn,
     InvalidSetError,
     InvalidWorkoutError,
-    NewExercise,
     NotFoundError,
     StaleProgramDayError,
     add_exercise,
@@ -76,17 +75,6 @@ class SetIn(BaseModel):
             message = "a set needs reps or a duration"
             raise ValueError(message)
         return self
-
-
-class ExerciseIn(BaseModel):
-    """A new exercise for the catalogue."""
-
-    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=60)]
-    equipment: Equipment
-    muscle_groups: Annotated[str, StringConstraints(max_length=200)] | None = None
-    # Distance is not creatable until sets can record a distance (cardio, later).
-    measure: Literal[Measure.REPS, Measure.SECONDS] = Measure.REPS
-    allow_similar: bool = False
 
 
 def _link(program: ProgramLinkIn | None) -> ProgramLink | None:
@@ -152,10 +140,9 @@ def delete_set(request: Request, client_id: UUID) -> Response:
 @router.post("/exercises", status_code=201)
 def post_exercise(request: Request, body: ExerciseIn) -> ExerciseSummary:
     """Add an exercise; 409 with the matches if it exists or looks like one that does."""
-    exercise = NewExercise(body.name, body.equipment, body.muscle_groups, body.measure)
     try:
         with closing(connect(_database(request))) as conn:
-            return add_exercise(conn, exercise, allow_similar=body.allow_similar)
+            return add_exercise(conn, body.new_exercise(), allow_similar=body.allow_similar)
     except DuplicateExerciseError as error:
         raise HTTPException(
             status_code=409,

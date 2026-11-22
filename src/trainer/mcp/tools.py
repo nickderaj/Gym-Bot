@@ -1,4 +1,4 @@
-"""The coach's tools: reading the training log (D10), and proposing a program (D12)."""
+"""The coach's tools: reading the log (D10), proposing a program (D12), adding exercises."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from trainer.mcp.protocol import Json, Tool, ToolError
+from trainer.services.journal import ExerciseIn
 from trainer.services.programs import ProgramEdit, ProgramIn, programs
 from trainer.storage.database import connect_readonly
 from trainer.storage.history import (
@@ -24,7 +25,7 @@ from trainer.storage.profile import read_profile
 from trainer.storage.programs import Change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from pathlib import Path
 
     from trainer.mcp.proposals import ProgramsApi
@@ -265,17 +266,29 @@ EDIT_DESCRIPTION = (
 )
 
 
+ADD_EXERCISE_DESCRIPTION = (
+    "Add an exercise to the catalogue, so it can be logged and put in a program. Check "
+    "list_exercises first and use an existing exercise when there is one. Equipment is part "
+    "of an exercise's identity: a dumbbell and a barbell bench press are two exercises. "
+    "It refuses a name that is already taken, and one that looks like an existing exercise, "
+    "naming the matches; use a match's id, or, only if it really is a different exercise, "
+    "call again with allow_similar true. Returns the new exercise with its id."
+)
+
+
 def tools(
     database: Path,
     programs_api: ProgramsApi | None = None,
     program_writer: Callable[[ProgramIn], object] | None = None,
     edit_writer: Callable[[ProgramEdit], object] | None = None,
+    exercise_writer: Callable[[ExerciseIn], object] | None = None,
 ) -> dict[str, Tool]:
     """The tool set over the database at ``database``.
 
-    Read tools open it read-only per call. ``propose_program`` and
-    ``propose_program_edit`` are offered when ``programs_api`` (or the matching
-    writer: ``program_writer``, ``edit_writer``) is given; ``programs_api`` wins.
+    Read tools open it read-only per call. ``propose_program``,
+    ``propose_program_edit`` and ``add_exercise`` are offered when
+    ``programs_api`` (or the matching writer: ``program_writer``,
+    ``edit_writer``, ``exercise_writer``) is given; ``programs_api`` wins.
     """
     found = {
         name: Tool(name, description, model.model_json_schema(), _caller(database, model, answer))
@@ -297,7 +310,29 @@ def tools(
             inline_refs(ProgramEdit.model_json_schema()),
             _proposer(ProgramEdit, edit),
         )
+    if programs_api is not None or exercise_writer is not None:
+        add = programs_api.add_exercise if programs_api is not None else exercise_writer
+        found["add_exercise"] = Tool(
+            "add_exercise",
+            ADD_EXERCISE_DESCRIPTION,
+            inline_refs(ExerciseIn.model_json_schema()),
+            _adder(add),
+        )
     return found
+
+
+def duplicate_refusal(*, exact: bool, matches: Iterable[tuple[int, str, str | None]]) -> str:
+    """Why an exercise was not added, naming each ``(id, name, equipment)`` it matched."""
+    named = "; ".join(
+        f"{name} (id {exercise_id}{'' if equipment is None else ', ' + equipment})"
+        for exercise_id, name, equipment in matches
+    )
+    if exact:
+        return f"the exercise was not added: the catalogue already has it as {named}"
+    return (
+        f"the exercise was not added: it looks like {named}. Use one of those ids, or call "
+        "add_exercise again with allow_similar true if it really is a different exercise"
+    )
 
 
 def inline_refs(schema: Json) -> Json:
@@ -343,6 +378,20 @@ def _proposer[Proposal: BaseModel](
             "proposed": saved,
             "next": "The owner reviews it in the app's Program screen and accepts it there.",
         }
+
+    return call
+
+
+def _adder(writer: Callable[[ExerciseIn], object] | None) -> Callable[[Json], object]:
+    def call(arguments: Json) -> object:
+        try:
+            exercise = ExerciseIn.model_validate(arguments)
+        except ValidationError as error:
+            raise ToolError(_describe(error)) from error
+        if writer is None:
+            message = "adding exercises is not configured"
+            raise ToolError(message)
+        return writer(exercise)
 
     return call
 

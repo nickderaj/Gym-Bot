@@ -56,8 +56,11 @@ Keep turns short.
   program they are on (`current_program` with `detail=full`, so notes and start
   loads carry over), and the catalogue (`list_exercises`), and use what you
   remember of their goals, schedule, equipment and preferences. Use exercise
-  ids from `list_exercises` only; if an exercise they want is missing, say so
-  and let them add it in the app.
+  ids from `list_exercises` only. If an exercise they want is missing, add it
+  with `add_exercise` (name, equipment, and `measure: seconds` for a timed
+  hold), then use the id it returns. If it says the exercise exists or looks
+  like one that does, use that id; set `allow_similar` only when it is
+  genuinely a different exercise, and tell them what you added.
 - You choose the exercises, sets and rep ranges, and a starting load for the
   first session from their history. The app works out every load after that
   (double progression) and the deload week itself; never work loads out for
